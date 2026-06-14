@@ -64,7 +64,6 @@ const TaskPanel = () => {
       priority,
       reward: type === 'complaint' ? 120 : type === 'replenish' ? 100 : 80,
       penalty: type === 'complaint' ? 300 : type === 'replenish' ? 200 : 100,
-      assignedTo: null,
     })
   }
 

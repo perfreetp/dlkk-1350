@@ -16,6 +16,9 @@ export interface Bike {
   gpsWorking: boolean
   totalRides: number
   lastMaintenance: number
+  rideStartTime?: number
+  rideStartStationId?: string
+  targetStationId?: string
 }
 
 export type StationType = 'normal' | 'hot' | 'no_parking' | 'maintenance' | 'hub'
@@ -29,6 +32,8 @@ export interface Station {
   availableBikes: number
   brokenBikes: number
   lowBatteryBikes: number
+  demandLevel: number
+  congestionLevel: number
 }
 
 export type TaskType = 'replenish' | 'recycle' | 'battery' | 'complaint'
@@ -50,6 +55,7 @@ export interface Task {
   progress: number
   reward: number
   penalty: number
+  bikeCount?: number
 }
 
 export type EmployeeRole = 'dispatcher' | 'maintenance' | 'battery' | 'patrol'
@@ -58,10 +64,13 @@ export type VehicleType = 'truck' | 'van' | 'scooter' | 'bike'
 
 export type ShiftType = 'morning' | 'afternoon' | 'night' | 'all'
 
+export type EmployeeAction = 'idle' | 'traveling' | 'loading' | 'unloading' | 'repairing' | 'swapping_battery' | 'resting'
+
 export interface RoutePoint {
   stationId: string
   action: 'pickup' | 'dropoff' | 'repair' | 'battery'
   order: number
+  bikeIds?: string[]
 }
 
 export interface Employee {
@@ -74,11 +83,14 @@ export interface Employee {
   carryingBikes: string[]
   position: Position
   status: 'idle' | 'working' | 'rest'
+  currentAction: EmployeeAction
   currentTaskId: string | null
+  targetStationId: string | null
   route: RoutePoint[]
   shift: ShiftType
   efficiency: number
   fatigue: number
+  actionProgress: number
 }
 
 export type EventType = 'rain' | 'concert' | 'subway_failure' | 'illegal_parking' | 'peak_hour'
@@ -97,7 +109,9 @@ export interface GameEvent {
     speedMultiplier?: number
     parkingViolationRate?: number
     batteryDrainMultiplier?: number
+    fineMultiplier?: number
   }
+  active: boolean
 }
 
 export type RepairType = 'brake' | 'battery' | 'gps' | 'lock'
@@ -111,6 +125,7 @@ export interface RepairJob {
   duration: number
   progress: number
   createdAt: number
+  assignedTo?: string
 }
 
 export interface GameRules {
@@ -122,6 +137,33 @@ export interface GameRules {
   illegalParkingFine: number
   lowBatteryThreshold: number
   overcapacityPenalty: number
+}
+
+export interface DailyStats {
+  day: number
+  revenue: {
+    rideFares: number
+    memberships: number
+    fines: number
+    other: number
+    total: number
+  }
+  expenses: {
+    repairs: number
+    batteries: number
+    salaries: number
+    penalties: number
+    other: number
+    total: number
+  }
+  rides: number
+  avgRideDuration: number
+  avgSatisfaction: number
+  avgViolationRate: number
+  bikeTurnover: number
+  completedTasks: number
+  failedTasks: number
+  eventsTriggered: number
 }
 
 export interface GameStats {
@@ -136,9 +178,37 @@ export interface GameStats {
   failedTasks: number
   bikesInCirculation: number
   avgBattery: number
+  dailyHistory: DailyStats[]
+  todayRevenue: {
+    rideFares: number
+    memberships: number
+    fines: number
+    other: number
+  }
+  todayExpenses: {
+    repairs: number
+    batteries: number
+    salaries: number
+    penalties: number
+    other: number
+  }
 }
 
 export type AchievementType = 'time_limit' | 'low_budget' | 'peak_guarantee'
+
+export type ChallengeMode = 'none' | 'time_limit' | 'low_budget' | 'peak_guarantee'
+
+export interface ChallengeConfig {
+  mode: ChallengeMode
+  title: string
+  description: string
+  startMoney: number
+  timeLimit?: number
+  targetProfit?: number
+  targetSatisfaction?: number
+  reward: number
+  difficulty: 'easy' | 'medium' | 'hard'
+}
 
 export interface Achievement {
   id: string
@@ -157,6 +227,9 @@ export interface GameState {
   speed: number
   isPaused: boolean
   money: number
+  gameStarted: boolean
+  challengeMode: ChallengeMode
+  challengeConfig: ChallengeConfig | null
   rules: GameRules
   stats: GameStats
   stations: Station[]
@@ -168,4 +241,7 @@ export interface GameState {
   achievements: Achievement[]
   activePanel: string
   selectedStationId: string | null
+  showChallengeSelect: boolean
+  gameOver: boolean
+  gameWon: boolean
 }

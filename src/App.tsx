@@ -10,9 +10,10 @@ import RepairShop from './components/RepairShop'
 import RulesSettings from './components/RulesSettings'
 import StatsPanel from './components/StatsPanel'
 import Achievements from './components/Achievements'
+import ChallengeSelect from './components/ChallengeSelect'
 
 function App() {
-  const { activePanel, tick } = useGameStore()
+  const { activePanel, tick, isPaused } = useGameStore()
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -54,6 +55,7 @@ function App() {
           {renderContent()}
         </div>
       </div>
+      <ChallengeSelect />
     </div>
   )
 }

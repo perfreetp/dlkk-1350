@@ -1,11 +1,17 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useGameStore } from '../store/gameStore'
 import { formatMoney } from '../utils/format'
+import { defaultRules } from '../data/initialData'
 
 const RulesSettings = () => {
-  const { rules, updateRules, resetGame } = useGameStore()
+  const { rules, updateRules, resetGame, setShowChallengeSelect } = useGameStore()
   const [localRules, setLocalRules] = useState(rules)
   const [hasChanges, setHasChanges] = useState(false)
+
+  useEffect(() => {
+    setLocalRules(rules)
+    setHasChanges(false)
+  }, [rules])
 
   const handleChange = (key: string, value: number) => {
     setLocalRules(prev => {
@@ -20,9 +26,16 @@ const RulesSettings = () => {
     setHasChanges(false)
   }
 
-  const handleReset = () => {
-    if (window.confirm('确定要重置游戏吗？所有进度将丢失。')) {
+  const handleResetRules = () => {
+    if (window.confirm('确定要重置规则为默认值吗？')) {
+      updateRules(defaultRules)
+    }
+  }
+
+  const handleResetGame = () => {
+    if (window.confirm('确定要重置游戏吗？所有进度将丢失，将返回挑战选择界面。')) {
       resetGame()
+      setShowChallengeSelect(true)
     }
   }
 
@@ -31,7 +44,10 @@ const RulesSettings = () => {
       <div className="card-header">
         <h2>⚙️ 规则设置</h2>
         <div style={{ display: 'flex', gap: '8px' }}>
-          <button className="btn btn-secondary btn-small" onClick={handleReset}>
+          <button className="btn btn-secondary btn-small" onClick={handleResetRules}>
+            重置规则
+          </button>
+          <button className="btn btn-danger btn-small" onClick={handleResetGame}>
             重置游戏
           </button>
           <button 
@@ -44,6 +60,24 @@ const RulesSettings = () => {
         </div>
       </div>
       <div className="card-body">
+        {hasChanges && (
+          <div style={{ 
+            padding: '10px 14px', 
+            backgroundColor: 'rgba(59, 130, 246, 0.1)', 
+            border: '1px solid var(--primary)',
+            borderRadius: '6px',
+            marginBottom: '20px',
+            fontSize: '12px',
+            color: 'var(--primary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            <span>⚠️</span>
+            <span>您有未保存的更改，点击"保存设置"按钮应用更改</span>
+          </div>
+        )}
+        
         <div className="rules-form">
           <div className="card" style={{ backgroundColor: 'var(--bg-card)' }}>
             <div className="card-header" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -176,6 +210,22 @@ const RulesSettings = () => {
             <p>• 罚款: 违规停车 {formatMoney(rules.illegalParkingFine)}，站点超载 {formatMoney(rules.overcapacityPenalty)}</p>
             <p>• 低电量标准: 低于 {rules.lowBatteryThreshold}%</p>
           </div>
+        </div>
+
+        <div style={{ 
+          marginTop: '20px', 
+          padding: '16px', 
+          backgroundColor: 'rgba(245, 158, 11, 0.1)', 
+          borderRadius: '8px',
+          fontSize: '12px',
+          color: 'var(--warning)',
+          lineHeight: '1.6'
+        }}>
+          <strong>💡 提示：</strong>
+          <br/>• 调整计费规则会直接影响收入和用户满意度
+          <br/>• 提高罚款可以减少违规率，但会降低满意度
+          <br/>• 增加停车奖励可以提升满意度，但会增加运营成本
+          <br/>• 规则更改会立即生效，请谨慎调整
         </div>
       </div>
     </div>

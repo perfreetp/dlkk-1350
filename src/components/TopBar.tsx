@@ -1,17 +1,8 @@
-import { useEffect } from 'react'
 import { useGameStore } from '../store/gameStore'
 import { formatTime, formatMoney } from '../utils/format'
 
 const TopBar = () => {
-  const { day, time, speed, isPaused, money, stats, togglePause, setSpeed, tick } = useGameStore()
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      tick()
-    }, 1000 / 1)
-
-    return () => clearInterval(interval)
-  }, [tick])
+  const { day, time, speed, isPaused, money, stats, togglePause, setSpeed } = useGameStore()
 
   return (
     <div className="top-bar">
