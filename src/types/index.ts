@@ -19,6 +19,10 @@ export interface Bike {
   rideStartTime?: number
   rideStartStationId?: string
   targetStationId?: string
+  inTransit?: 'to_repair' | 'to_station' | 'from_station' | null
+  transitSourceId?: string
+  transitTargetId?: string
+  dispatchTime?: number
 }
 
 export type StationType = 'normal' | 'hot' | 'no_parking' | 'maintenance' | 'hub'
@@ -34,6 +38,10 @@ export interface Station {
   lowBatteryBikes: number
   demandLevel: number
   congestionLevel: number
+  baseDemandLevel?: number
+  baseCongestionLevel?: number
+  dispatchPriorityBoost?: number
+  boostedUntil?: number
 }
 
 export type TaskType = 'replenish' | 'recycle' | 'battery' | 'complaint'
@@ -56,6 +64,11 @@ export interface Task {
   reward: number
   penalty: number
   bikeCount?: number
+  sourceStationId?: string
+  targetStationId?: string
+  completedAt?: number
+  actualReward?: number
+  actualPenalty?: number
 }
 
 export type EmployeeRole = 'dispatcher' | 'maintenance' | 'battery' | 'patrol'
@@ -126,6 +139,8 @@ export interface RepairJob {
   progress: number
   createdAt: number
   assignedTo?: string
+  returnStationId?: string
+  completedAt?: number
 }
 
 export interface GameRules {
@@ -164,6 +179,52 @@ export interface DailyStats {
   completedTasks: number
   failedTasks: number
   eventsTriggered: number
+  taskRevenue: {
+    replenish: number
+    recycle: number
+    battery: number
+    complaint: number
+  }
+  taskPenalty: {
+    replenish: number
+    recycle: number
+    battery: number
+    complaint: number
+  }
+  stationStats: {
+    stationId: string
+    stationName: string
+    rides: number
+    revenue: number
+    violations: number
+    satisfactionContribution: number
+  }[]
+}
+
+export type ChallengeResult = 'won' | 'lost' | 'abandoned'
+
+export interface ChallengeHistoryEntry {
+  id: string
+  mode: ChallengeMode
+  title: string
+  startTime: number
+  endTime: number
+  totalDays: number
+  result: ChallengeResult
+  lossReason?: string
+  startMoney: number
+  endMoney: number
+  profit: number
+  targetProfit?: number
+  finalSatisfaction?: number
+  targetSatisfaction?: number
+  completedTasks: number
+  failedTasks: number
+  totalRides: number
+  totalRevenue: number
+  totalExpenses: number
+  reward?: number
+  rank?: number
 }
 
 export interface GameStats {
@@ -192,6 +253,24 @@ export interface GameStats {
     penalties: number
     other: number
   }
+  todayTaskRevenue: {
+    replenish: number
+    recycle: number
+    battery: number
+    complaint: number
+  }
+  todayTaskPenalty: {
+    replenish: number
+    recycle: number
+    battery: number
+    complaint: number
+  }
+  todayStationStats: Map<string, {
+    rides: number
+    revenue: number
+    violations: number
+    satisfactionContribution: number
+  }>
 }
 
 export type AchievementType = 'time_limit' | 'low_budget' | 'peak_guarantee'
@@ -230,6 +309,7 @@ export interface GameState {
   gameStarted: boolean
   challengeMode: ChallengeMode
   challengeConfig: ChallengeConfig | null
+  challengeStart: number
   rules: GameRules
   stats: GameStats
   stations: Station[]
@@ -244,4 +324,15 @@ export interface GameState {
   showChallengeSelect: boolean
   gameOver: boolean
   gameWon: boolean
+  lossReason?: string
+  challengeHistory: ChallengeHistoryEntry[]
+  dispatchLogs: {
+    id: string
+    time: number
+    type: 'pickup' | 'dropoff' | 'recycle' | 'repair_done' | 'to_repair'
+    stationFrom?: string
+    stationTo?: string
+    bikeCount: number
+    employeeId?: string
+  }[]
 }

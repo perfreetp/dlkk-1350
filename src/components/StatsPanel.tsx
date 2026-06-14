@@ -1,9 +1,12 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useGameStore } from '../store/gameStore'
 import { formatMoney, formatTime } from '../utils/format'
 
 const StatsPanel = () => {
-  const { stats, money, stations, bikes, tasks, day, time, events } = useGameStore()
+  const { 
+    stats, money, stations, bikes, tasks, day, time, events,
+    challengeMode, challengeConfig, challengeHistory
+  } = useGameStore()
   const [selectedDay, setSelectedDay] = useState<number | null>(null)
 
   const profit = stats.revenue - stats.expenses
@@ -65,6 +68,110 @@ const StatsPanel = () => {
   const displayExpenses = selectedDayStats ? selectedDayStats.expenses : todayExpenses
   const displayTotalRevenue = selectedDayStats ? selectedDayStats.revenue.total : todayTotalRevenue
   const displayTotalExpenses = selectedDayStats ? selectedDayStats.expenses.total : todayTotalExpenses
+
+  const displayTaskRevenue = selectedDayStats ? selectedDayStats.taskRevenue : stats.todayTaskRevenue
+  const displayTaskPenalty = selectedDayStats ? selectedDayStats.taskPenalty : stats.todayTaskPenalty
+
+  const taskTypeLabels: Record<string, { name: string; icon: string }> = {
+    replenish: { name: '补车任务', icon: '🚚' },
+    recycle: { name: '回收任务', icon: '♻️' },
+    battery: { name: '换电任务', icon: '🔋' },
+    complaint: { name: '投诉处理', icon: '📞' },
+  }
+
+  const totalTaskRevenue = Object.values(displayTaskRevenue).reduce((sum, v) => sum + v, 0)
+  const totalTaskPenalty = Object.values(displayTaskPenalty).reduce((sum, v) => sum + v, 0)
+
+  const stationRankingData = useMemo(() => {
+    let rankings: {
+      stationId: string
+      stationName: string
+      rides: number
+      revenue: number
+      violations: number
+      satisfactionContribution: number
+      score: number
+    }[] = []
+
+    if (selectedDayStats && selectedDayStats.stationStats && selectedDayStats.stationStats.length > 0) {
+      rankings = selectedDayStats.stationStats.map(s => ({
+        ...s,
+        score: s.revenue * 0.5 + s.rides * 10 + s.satisfactionContribution * 50,
+      }))
+    } else if (stats.todayStationStats && stats.todayStationStats.size > 0) {
+      rankings = Array.from(stats.todayStationStats.entries()).map(([stationId, data]) => {
+        const station = stations.find(s => s.id === stationId)
+        return {
+          stationId,
+          stationName: station?.name || stationId,
+          rides: data.rides,
+          revenue: data.revenue,
+          violations: data.violations,
+          satisfactionContribution: data.satisfactionContribution,
+          score: data.revenue * 0.5 + data.rides * 10 + data.satisfactionContribution * 50,
+        }
+      })
+    } else {
+      rankings = stations
+        .filter(s => s.type !== 'no_parking')
+        .map(s => ({
+          stationId: s.id,
+          stationName: s.name,
+          rides: 0,
+          revenue: s.availableBikes * 2,
+          violations: Math.floor(s.congestionLevel / 10),
+          satisfactionContribution: (100 - s.congestionLevel) * 0.1,
+          score: s.availableBikes * 5 + s.demandLevel * 0.5 - s.congestionLevel * 0.3,
+        }))
+    }
+
+    rankings.sort((a, b) => b.score - a.score)
+    return rankings
+  }, [selectedDayStats, stats.todayStationStats, stations])
+
+  const top3Stations = stationRankingData.slice(0, 3)
+  const bottom3Stations = stationRankingData.slice(-3).reverse()
+
+  const bestHistory = useMemo(() => {
+    if (!challengeMode || challengeMode === 'none') return null
+    const sameModeHistory = challengeHistory.filter(h => h.mode === challengeMode)
+    if (sameModeHistory.length === 0) return null
+    
+    if (challengeMode === 'peak_guarantee') {
+      return sameModeHistory
+        .filter(h => h.finalSatisfaction !== undefined)
+        .sort((a, b) => (b.finalSatisfaction || 0) - (a.finalSatisfaction || 0))[0]
+    } else {
+      return sameModeHistory.sort((a, b) => b.profit - a.profit)[0]
+    }
+  }, [challengeMode, challengeHistory])
+
+  const currentRank = useMemo(() => {
+    if (!challengeMode || challengeMode === 'none' || !challengeConfig) return null
+    const sameModeHistory = challengeHistory.filter(h => h.mode === challengeMode)
+    if (sameModeHistory.length === 0) return { rank: 1, total: 1 }
+
+    let currentValue: number
+    if (challengeMode === 'peak_guarantee') {
+      currentValue = stats.satisfaction
+    } else {
+      currentValue = money - challengeConfig.startMoney
+    }
+
+    let betterCount = 0
+    for (const h of sameModeHistory) {
+      const hValue = challengeMode === 'peak_guarantee' ? (h.finalSatisfaction || 0) : h.profit
+      if (hValue > currentValue) betterCount++
+    }
+
+    return { rank: betterCount + 1, total: sameModeHistory.length + 1 }
+  }, [challengeMode, challengeHistory, challengeConfig, money, stats.satisfaction])
+
+  const difficultyLabels: Record<string, { label: string; color: string }> = {
+    easy: { label: '简单', color: 'var(--secondary)' },
+    medium: { label: '中等', color: 'var(--warning)' },
+    hard: { label: '困难', color: 'var(--danger)' },
+  }
 
   return (
     <div className="card">
@@ -203,6 +310,60 @@ const StatsPanel = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '600' }}>
                   <span>支出合计</span>
                   <span style={{ color: 'var(--danger)' }}>-{formatMoney(displayTotalExpenses)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="two-col" style={{ marginTop: '20px' }}>
+          <div className="card" style={{ backgroundColor: 'var(--bg-card)' }}>
+            <div className="card-header" style={{ borderBottom: '1px solid var(--border)' }}>
+              <h3 style={{ fontSize: '14px' }}>✅ 任务收入明细</h3>
+            </div>
+            <div className="card-body" style={{ padding: '16px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {Object.entries(taskTypeLabels).map(([type, { name, icon }]) => (
+                  <div key={type} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '16px' }}>{icon}</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>{name}</span>
+                    </div>
+                    <span style={{ color: 'var(--secondary)', fontWeight: '600' }}>
+                      +{formatMoney(displayTaskRevenue[type as keyof typeof displayTaskRevenue])}
+                    </span>
+                  </div>
+                ))}
+                <div style={{ height: '1px', backgroundColor: 'var(--border)' }}></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '600' }}>
+                  <span>任务收入合计</span>
+                  <span style={{ color: 'var(--secondary)' }}>+{formatMoney(totalTaskRevenue)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card" style={{ backgroundColor: 'var(--bg-card)' }}>
+            <div className="card-header" style={{ borderBottom: '1px solid var(--border)' }}>
+              <h3 style={{ fontSize: '14px' }}>❌ 任务罚款明细</h3>
+            </div>
+            <div className="card-body" style={{ padding: '16px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {Object.entries(taskTypeLabels).map(([type, { name, icon }]) => (
+                  <div key={type} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '16px' }}>{icon}</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>{name}</span>
+                    </div>
+                    <span style={{ color: 'var(--danger)', fontWeight: '600' }}>
+                      -{formatMoney(displayTaskPenalty[type as keyof typeof displayTaskPenalty])}
+                    </span>
+                  </div>
+                ))}
+                <div style={{ height: '1px', backgroundColor: 'var(--border)' }}></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '600' }}>
+                  <span>任务罚款合计</span>
+                  <span style={{ color: 'var(--danger)' }}>-{formatMoney(totalTaskPenalty)}</span>
                 </div>
               </div>
             </div>
@@ -448,6 +609,83 @@ const StatsPanel = () => {
 
         <div className="card" style={{ marginTop: '20px', backgroundColor: 'var(--bg-card)' }}>
           <div className="card-header" style={{ borderBottom: '1px solid var(--border)' }}>
+            <h3 style={{ fontSize: '14px' }}>🏆 站点经营排名 / 拖后腿警告</h3>
+          </div>
+          <div className="card-body" style={{ padding: '16px' }}>
+            <div className="two-col" style={{ gap: '16px' }}>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--secondary)', marginBottom: '10px' }}>
+                  🎉 TOP 3 优秀站点
+                </div>
+                <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                      <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-secondary)' }}>排名</th>
+                      <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-secondary)' }}>站点</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--text-secondary)' }}>营收</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--text-secondary)' }}>骑行</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--text-secondary)' }}>满意度</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {top3Stations.map((s, idx) => (
+                      <tr key={s.stationId} style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td style={{ padding: '6px 8px', fontWeight: '600', color: 'var(--secondary)' }}>
+                          {idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'}
+                        </td>
+                        <td style={{ padding: '6px 8px', fontWeight: '500' }}>{s.stationName}</td>
+                        <td style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--secondary)' }}>
+                          +{formatMoney(s.revenue)}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '6px 8px' }}>{s.rides}</td>
+                        <td style={{ textAlign: 'right', padding: '6px 8px', color: s.satisfactionContribution >= 0 ? 'var(--secondary)' : 'var(--danger)' }}>
+                          {s.satisfactionContribution >= 0 ? '+' : ''}{s.satisfactionContribution.toFixed(1)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--danger)', marginBottom: '10px' }}>
+                  ⚠️ BOTTOM 3 待改进站点
+                </div>
+                <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                      <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-secondary)' }}>排名</th>
+                      <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-secondary)' }}>站点</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--text-secondary)' }}>营收</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--text-secondary)' }}>骑行</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--text-secondary)' }}>满意度</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bottom3Stations.map((s, idx) => (
+                      <tr key={s.stationId} style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td style={{ padding: '6px 8px', fontWeight: '600', color: 'var(--danger)' }}>
+                          {idx === 0 ? '💀' : idx === 1 ? '😱' : '😟'}
+                        </td>
+                        <td style={{ padding: '6px 8px', fontWeight: '500' }}>{s.stationName}</td>
+                        <td style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--danger)' }}>
+                          +{formatMoney(s.revenue)}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '6px 8px' }}>{s.rides}</td>
+                        <td style={{ textAlign: 'right', padding: '6px 8px', color: s.satisfactionContribution >= 0 ? 'var(--secondary)' : 'var(--danger)' }}>
+                          {s.satisfactionContribution >= 0 ? '+' : ''}{s.satisfactionContribution.toFixed(1)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="card" style={{ marginTop: '20px', backgroundColor: 'var(--bg-card)' }}>
+          <div className="card-header" style={{ borderBottom: '1px solid var(--border)' }}>
             <h3 style={{ fontSize: '14px' }}>💰 财务概览</h3>
           </div>
           <div className="card-body" style={{ padding: '16px' }}>
@@ -531,6 +769,237 @@ const StatsPanel = () => {
             </div>
           </div>
         </div>
+
+        {challengeMode !== 'none' && challengeConfig && (
+          <div className="card" style={{ marginTop: '20px', backgroundColor: 'var(--bg-card)', border: '2px solid var(--primary)' }}>
+            <div className="card-header" style={{ borderBottom: '1px solid var(--border)' }}>
+              <h3 style={{ fontSize: '14px' }}>🎯 挑战模式整局表现</h3>
+              <div style={{ 
+                fontSize: '12px', 
+                padding: '2px 8px', 
+                borderRadius: '4px',
+                backgroundColor: `${difficultyLabels[challengeConfig.difficulty].color}22`,
+                color: difficultyLabels[challengeConfig.difficulty].color,
+                fontWeight: '600'
+              }}>
+                {difficultyLabels[challengeConfig.difficulty].label}
+              </div>
+            </div>
+            <div className="card-body" style={{ padding: '16px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ fontSize: '16px', fontWeight: '600' }}>
+                    {challengeConfig.title}
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    {challengeConfig.description}
+                  </div>
+                </div>
+
+                <div style={{ 
+                  display: 'grid', 
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', 
+                  gap: '12px' 
+                }}>
+                  <div style={{ 
+                    padding: '12px', 
+                    backgroundColor: 'var(--bg-dark)', 
+                    borderRadius: '8px' 
+                  }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px' }}>起始资金</div>
+                    <div style={{ fontSize: '18px', fontWeight: '600', color: 'var(--secondary)' }}>
+                      {formatMoney(challengeConfig.startMoney)}
+                    </div>
+                  </div>
+                  <div style={{ 
+                    padding: '12px', 
+                    backgroundColor: 'var(--bg-dark)', 
+                    borderRadius: '8px' 
+                  }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px' }}>已运营天数</div>
+                    <div style={{ fontSize: '18px', fontWeight: '600' }}>
+                      第 {day} 天
+                    </div>
+                  </div>
+                  <div style={{ 
+                    padding: '12px', 
+                    backgroundColor: 'var(--bg-dark)', 
+                    borderRadius: '8px' 
+                  }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px' }}>当前资金</div>
+                    <div style={{ fontSize: '18px', fontWeight: '600', color: money >= 0 ? 'var(--secondary)' : 'var(--danger)' }}>
+                      {formatMoney(money)}
+                    </div>
+                  </div>
+                  {challengeMode !== 'peak_guarantee' && (
+                    <div style={{ 
+                      padding: '12px', 
+                      backgroundColor: 'var(--bg-dark)', 
+                      borderRadius: '8px' 
+                    }}>
+                      <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px' }}>当前利润</div>
+                      <div style={{ fontSize: '18px', fontWeight: '600', color: (money - challengeConfig.startMoney) >= 0 ? 'var(--secondary)' : 'var(--danger)' }}>
+                        {(money - challengeConfig.startMoney) >= 0 ? '+' : ''}{formatMoney(money - challengeConfig.startMoney)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ 
+                  padding: '14px', 
+                  backgroundColor: 'var(--bg-dark)', 
+                  borderRadius: '8px' 
+                }}>
+                  {challengeMode === 'peak_guarantee' ? (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span style={{ fontWeight: '600' }}>满意度目标</span>
+                        <span style={{ fontSize: '13px' }}>
+                          当前 {stats.satisfaction.toFixed(1)}% / 最低 {challengeConfig.targetSatisfaction}%
+                        </span>
+                      </div>
+                      <div className="progress-bar" style={{ height: '10px' }}>
+                        <div 
+                          className={`progress-fill ${stats.satisfaction >= (challengeConfig.targetSatisfaction || 0) ? 'success' : 'warning'}`}
+                          style={{ 
+                            width: `${Math.min(100, (stats.satisfaction / Math.max(1, (challengeConfig.targetSatisfaction || 0))) * 100)}%` 
+                          }}
+                        ></div>
+                      </div>
+                      <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-secondary)' }}>
+                        {stats.satisfaction >= (challengeConfig.targetSatisfaction || 0) 
+                          ? '✅ 满意度达标，继续保持！' 
+                          : '⚠️ 满意度低于目标，注意高峰时段服务质量！'}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span style={{ fontWeight: '600' }}>利润目标</span>
+                        <span style={{ fontSize: '13px' }}>
+                          当前 {money - challengeConfig.startMoney >= 0 ? '+' : ''}{formatMoney(money - challengeConfig.startMoney)} 
+                          {' / '}
+                          目标 {formatMoney(challengeConfig.targetProfit || 0)}
+                        </span>
+                      </div>
+                      <div className="progress-bar" style={{ height: '10px' }}>
+                        <div 
+                          className={`progress-fill ${(money - challengeConfig.startMoney) >= (challengeConfig.targetProfit || 0) ? 'success' : (money - challengeConfig.startMoney) >= 0 ? 'warning' : 'danger'}`}
+                          style={{ 
+                            width: `${Math.min(100, Math.max(0, ((money - challengeConfig.startMoney) / Math.max(1, (challengeConfig.targetProfit || 0))) * 100))}%` 
+                          }}
+                        ></div>
+                      </div>
+                      <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-secondary)' }}>
+                        {(money - challengeConfig.startMoney) >= (challengeConfig.targetProfit || 0)
+                          ? '🎉 已达成目标！'
+                          : `还差 ${formatMoney((challengeConfig.targetProfit || 0) - (money - challengeConfig.startMoney))} 达成目标`}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {bestHistory && (
+                  <div style={{ 
+                    padding: '14px', 
+                    backgroundColor: 'var(--bg-dark)', 
+                    borderRadius: '8px',
+                    border: '1px dashed var(--border)'
+                  }}>
+                    <div style={{ fontSize: '12px', fontWeight: '600', marginBottom: '10px', color: 'var(--warning)' }}>
+                      🏆 历史最好成绩
+                    </div>
+                    <div style={{ 
+                      display: 'grid', 
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', 
+                      gap: '10px',
+                      fontSize: '12px'
+                    }}>
+                      <div>
+                        <span style={{ color: 'var(--text-secondary)' }}>结果：</span>
+                        <span style={{ 
+                          fontWeight: '600', 
+                          color: bestHistory.result === 'won' ? 'var(--secondary)' : 'var(--danger)' 
+                        }}>
+                          {bestHistory.result === 'won' ? '✓ 通关成功' : '✗ 挑战失败'}
+                        </span>
+                      </div>
+                      <div>
+                        <span style={{ color: 'var(--text-secondary)' }}>运营天数：</span>
+                        <span style={{ fontWeight: '600' }}>{bestHistory.totalDays.toFixed(1)} 天</span>
+                      </div>
+                      {bestHistory.rank && (
+                        <div>
+                          <span style={{ color: 'var(--text-secondary)' }}>评级：</span>
+                          <span style={{ fontWeight: '600' }}>{'★'.repeat(bestHistory.rank)}{'☆'.repeat(5 - bestHistory.rank)}</span>
+                        </div>
+                      )}
+                      {challengeMode === 'peak_guarantee' ? (
+                        <div>
+                          <span style={{ color: 'var(--text-secondary)' }}>最终满意度：</span>
+                          <span style={{ fontWeight: '600', color: 'var(--secondary)' }}>
+                            {(bestHistory.finalSatisfaction || 0).toFixed(1)}%
+                          </span>
+                        </div>
+                      ) : (
+                        <div>
+                          <span style={{ color: 'var(--text-secondary)' }}>最终利润：</span>
+                          <span style={{ 
+                            fontWeight: '600', 
+                            color: bestHistory.profit >= 0 ? 'var(--secondary)' : 'var(--danger)' 
+                          }}>
+                            {bestHistory.profit >= 0 ? '+' : ''}{formatMoney(bestHistory.profit)}
+                          </span>
+                        </div>
+                      )}
+                      <div>
+                        <span style={{ color: 'var(--text-secondary)' }}>总骑行：</span>
+                        <span style={{ fontWeight: '600' }}>{bestHistory.totalRides} 次</span>
+                      </div>
+                      <div>
+                        <span style={{ color: 'var(--text-secondary)' }}>完成任务：</span>
+                        <span style={{ fontWeight: '600' }}>{bestHistory.completedTasks} 个</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {currentRank && (
+                  <div style={{ 
+                    padding: '12px', 
+                    backgroundColor: `${currentRank.rank <= Math.ceil(currentRank.total / 3) ? 'var(--secondary)' : currentRank.rank <= Math.ceil(currentRank.total * 2 / 3) ? 'var(--warning)' : 'var(--danger)'}15`,
+                    borderRadius: '8px',
+                    border: `1px solid ${currentRank.rank <= Math.ceil(currentRank.total / 3) ? 'var(--secondary)' : currentRank.rank <= Math.ceil(currentRank.total * 2 / 3) ? 'var(--warning)' : 'var(--danger)'}44`
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>本局目前排名估算：</span>
+                        <span style={{ 
+                          fontSize: '20px', 
+                          fontWeight: '700',
+                          marginLeft: '8px',
+                          color: currentRank.rank <= Math.ceil(currentRank.total / 3) ? 'var(--secondary)' : currentRank.rank <= Math.ceil(currentRank.total * 2 / 3) ? 'var(--warning)' : 'var(--danger)'
+                        }}>
+                          第 {currentRank.rank} 名
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        共 {currentRank.total} 次历史记录
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '6px' }}>
+                      {currentRank.rank <= Math.ceil(currentRank.total / 3) 
+                        ? '🌟 表现优秀，保持领先！'
+                        : currentRank.rank <= Math.ceil(currentRank.total * 2 / 3)
+                        ? '💪 中等水平，还有提升空间！'
+                        : '📉 需要加油，争取更好成绩！'}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

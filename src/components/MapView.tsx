@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useGameStore } from '../store/gameStore'
 import { getBatteryColor, getStationTypeLabel, formatMoney } from '../utils/format'
-import { Station } from '../types'
+import { Station, GameEvent, Bike } from '../types'
 
 const MapView = () => {
   const { stations, bikes, employees, selectedStationId, setSelectedStation, events } = useGameStore()
@@ -61,11 +61,48 @@ const MapView = () => {
     return station.availableBikes / station.capacity
   }
 
+  const getSeverityColor = (severity: GameEvent['severity']) => {
+    switch (severity) {
+      case 'severe': return { stroke: '#ef4444', fill: 'rgba(239, 68, 68, 0.2)' }
+      case 'moderate': return { stroke: '#f97316', fill: 'rgba(249, 115, 22, 0.2)' }
+      case 'mild': return { stroke: '#eab308', fill: 'rgba(234, 179, 8, 0.2)' }
+    }
+  }
+
+  const getEventLabel = (event: GameEvent) => {
+    switch (event.type) {
+      case 'concert': return '🎤 演唱会中'
+      case 'subway_failure': return '🚇 地铁故障'
+      case 'rain': return '🌧️ 暴雨'
+      case 'illegal_parking': return '⚠️ 乱停'
+      case 'peak_hour': return '⏰ 高峰'
+      default: return '📢 事件'
+    }
+  }
+
+  const getStationEvents = (stationId: string, activeEvents: GameEvent[]) => {
+    return activeEvents.filter(e => e.affectedStations.includes(stationId))
+  }
+
+  const getDemandIncreasePercent = (station: Station, events: GameEvent[]) => {
+    const stationEvents = getStationEvents(station.id, events)
+    const multiplier = stationEvents.reduce((acc, e) => acc * (e.effects.demandMultiplier || 1), 1)
+    return Math.round((multiplier - 1) * 100)
+  }
+
+  const getBikeStatusLabel = (bike: Bike) => {
+    if (bike.status === 'broken') return '故障'
+    if (bike.status === 'maintenance') return '维修中'
+    if (bike.battery < 20) return '低电量'
+    return '正常'
+  }
+
   const availableBikes = bikes.filter(b => b.status === 'available' && b.stationId)
   const ridingBikes = bikes.filter(b => b.status === 'riding')
+  const transitBikes = bikes.filter(b => b.status === 'transit' || b.inTransit != null)
 
+  const currentTime = useGameStore.getState().time
   const activeEvents = events.filter(e => {
-    const currentTime = useGameStore.getState().time
     return currentTime >= e.startTime && currentTime < e.startTime + e.duration
   })
 
@@ -80,9 +117,62 @@ const MapView = () => {
           <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
             <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#334155" strokeWidth="0.5" opacity="0.3" />
           </pattern>
+          <filter id="glow-severe" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+            <feMerge>
+              <feMergeNode in="coloredBlur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+          <filter id="glow-moderate" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+            <feMerge>
+              <feMergeNode in="coloredBlur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+          <filter id="glow-mild" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+            <feMerge>
+              <feMergeNode in="coloredBlur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
         </defs>
         
         <rect width={mapWidth} height={mapHeight} fill="url(#grid)" />
+
+        {transitBikes.map(bike => {
+          if (!bike.transitSourceId || !bike.transitTargetId) return null
+          const sourceStation = stations.find(s => s.id === bike.transitSourceId)
+          const targetStation = stations.find(s => s.id === bike.transitTargetId)
+          if (!sourceStation || !targetStation) return null
+          
+          return (
+            <g key={`transit-line-${bike.id}`}>
+              <line
+                x1={sourceStation.position.x}
+                y1={sourceStation.position.y}
+                x2={targetStation.position.x}
+                y2={targetStation.position.y}
+                stroke={bike.inTransit === 'to_repair' ? '#8b5cf6' : '#10b981'}
+                strokeWidth="2"
+                strokeDasharray="8 4"
+                opacity="0.6"
+                style={{ animation: 'dash 1.5s linear infinite' }}
+              />
+              <circle
+                cx={bike.position.x}
+                cy={bike.position.y}
+                r="5"
+                fill={bike.inTransit === 'to_repair' ? '#8b5cf6' : '#10b981'}
+                stroke="#fff"
+                strokeWidth="1.5"
+                opacity="0.9"
+              />
+            </g>
+          )
+        })}
 
         {stations.filter(s => s.type === 'hot').map(station => (
           <circle
@@ -96,6 +186,40 @@ const MapView = () => {
             className="hot-zone-ring"
           />
         ))}
+
+        {activeEvents.map(event => 
+          event.affectedStations.map(stationId => {
+            const station = stations.find(s => s.id === stationId)
+            if (!station || station.type === 'no_parking') return null
+            const severityColors = getSeverityColor(event.severity)
+            const size = getStationSize(station)
+            
+            return (
+              <g key={`event-pulse-${event.id}-${stationId}`}>
+                <circle
+                  cx={station.position.x}
+                  cy={station.position.y}
+                  r={size + 18}
+                  fill="none"
+                  stroke={severityColors.stroke}
+                  strokeWidth="2"
+                  opacity="0.4"
+                  style={{ animation: 'pulse 2s infinite' }}
+                />
+                <circle
+                  cx={station.position.x}
+                  cy={station.position.y}
+                  r={size + 12}
+                  fill="none"
+                  stroke={severityColors.stroke}
+                  strokeWidth="1.5"
+                  opacity="0.6"
+                  style={{ animation: 'pulse 2s infinite 0.3s' }}
+                />
+              </g>
+            )
+          })
+        )}
 
         {stations.filter(s => s.type === 'no_parking').map(station => (
           <g key={`np-${station.id}`}>
@@ -138,6 +262,10 @@ const MapView = () => {
           const size = getStationSize(station)
           const capacityFill = getCapacityFill(station)
           const isSelected = station.id === selectedStationId
+          const stationEvents = getStationEvents(station.id, activeEvents)
+          const hasActiveEvent = stationEvents.length > 0
+          const demandIncrease = hasActiveEvent ? getDemandIncreasePercent(station, activeEvents) : 0
+          const priorityBoost = station.dispatchPriorityBoost || 0
           
           return (
             <g
@@ -174,6 +302,31 @@ const MapView = () => {
                 />
               )}
               
+              {priorityBoost > 0 && (
+                <g>
+                  <rect
+                    x={station.position.x + size + 2}
+                    y={station.position.y - size - 18}
+                    width="56"
+                    height="18"
+                    rx="4"
+                    fill="#f59e0b"
+                    stroke="#fbbf24"
+                    strokeWidth="1"
+                  />
+                  <text
+                    x={station.position.x + size + 30}
+                    y={station.position.y - size - 5}
+                    textAnchor="middle"
+                    fill="#fff"
+                    fontSize="10"
+                    fontWeight="700"
+                  >
+                    ⚡+{priorityBoost}
+                  </text>
+                </g>
+              )}
+              
               <text
                 x={station.position.x}
                 y={station.position.y + size + 16}
@@ -184,6 +337,43 @@ const MapView = () => {
               >
                 {station.name}
               </text>
+              
+              {hasActiveEvent && (
+                <g>
+                  <rect
+                    x={station.position.x - 42}
+                    y={station.position.y - size - 36}
+                    width="84"
+                    height="18"
+                    rx="4"
+                    fill={getSeverityColor(stationEvents[0].severity).stroke}
+                    opacity="0.9"
+                  />
+                  <text
+                    x={station.position.x}
+                    y={station.position.y - size - 23}
+                    textAnchor="middle"
+                    fill="#fff"
+                    fontSize="10"
+                    fontWeight="600"
+                  >
+                    {getEventLabel(stationEvents[0])}
+                  </text>
+                </g>
+              )}
+              
+              {demandIncrease > 0 && (
+                <text
+                  x={station.position.x}
+                  y={station.position.y + size + 30}
+                  textAnchor="middle"
+                  fill="#ef4444"
+                  fontSize="10"
+                  fontWeight="700"
+                >
+                  需求+{demandIncrease}%
+                </text>
+              )}
               
               <text
                 x={station.position.x}
@@ -238,6 +428,30 @@ const MapView = () => {
             >
               {emp.name}
             </text>
+            {emp.carryingBikes.length > 0 && (
+              <g>
+                <rect
+                  x={emp.position.x + 12}
+                  y={emp.position.y - 12}
+                  width="30"
+                  height="16"
+                  rx="4"
+                  fill="#10b981"
+                  stroke="#34d399"
+                  strokeWidth="1"
+                />
+                <text
+                  x={emp.position.x + 27}
+                  y={emp.position.y - 1}
+                  textAnchor="middle"
+                  fill="#fff"
+                  fontSize="10"
+                  fontWeight="700"
+                >
+                  🚲{emp.carryingBikes.length}
+                </text>
+              </g>
+            )}
           </g>
         ))}
 
@@ -292,6 +506,20 @@ const MapView = () => {
             <span className="label">低电量</span>
             <span style={{ color: '#f59e0b' }}>{hoveredStation.lowBatteryBikes}辆</span>
           </div>
+          <div className="stat-row">
+            <span className="label">需求等级</span>
+            <span>{Math.round(hoveredStation.demandLevel)}%</span>
+          </div>
+          <div className="stat-row">
+            <span className="label">拥堵等级</span>
+            <span>{Math.round(hoveredStation.congestionLevel)}%</span>
+          </div>
+          {(hoveredStation.dispatchPriorityBoost || 0) > 0 && (
+            <div className="stat-row">
+              <span className="label">调度优先级</span>
+              <span style={{ color: '#f59e0b', fontWeight: '600' }}>⚡ +{hoveredStation.dispatchPriorityBoost}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -324,6 +552,14 @@ const MapView = () => {
         <div className="legend-item">
           <div className="legend-dot" style={{ backgroundColor: '#ef4444' }}></div>
           <span>低电量</span>
+        </div>
+        <div className="legend-item">
+          <div className="legend-dot" style={{ backgroundColor: '#10b981' }}></div>
+          <span>转运中</span>
+        </div>
+        <div className="legend-item">
+          <div style={{ display: 'inline-block', width: '20px', height: '2px', background: 'repeating-linear-gradient(90deg, #ef4444, #ef4444 4px, transparent 4px, transparent 8px)', verticalAlign: 'middle', marginRight: '6px' }}></div>
+          <span>严重事件</span>
         </div>
       </div>
     </div>

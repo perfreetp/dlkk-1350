@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { 
   GameState, Task, Employee, GameEvent, RepairJob, Bike, 
   Station, GameRules, Achievement, TaskPriority, TaskType,
-  DailyStats, ChallengeConfig, ChallengeMode
+  DailyStats, ChallengeConfig, ChallengeMode, ChallengeHistoryEntry, EventType
 } from '../types'
 import { 
   generateStations, generateBikes, generateEmployees, 
@@ -20,20 +20,23 @@ interface GameStore extends GameState {
   tick: () => void
   
   assignTask: (taskId: string, employeeId: string) => void
+  assignTaskWithSource: (taskId: string, employeeId: string, sourceStationId?: string) => void
   completeTask: (taskId: string) => void
   failTask: (taskId: string) => void
   addTask: (task: Omit<Task, 'id' | 'createdAt' | 'progress' | 'status' | 'assignedTo'>) => void
   updateTaskPriority: (taskId: string, priority: TaskPriority) => void
+  setTaskSourceStation: (taskId: string, sourceStationId: string | undefined) => void
   
   updateEmployeeRoute: (employeeId: string, route: { stationId: string; action: string; order: number }[]) => void
   setEmployeeStatus: (employeeId: string, status: 'idle' | 'working' | 'rest') => void
   
-  addEvent: (event: Omit<GameEvent, 'id' | 'active'>) => void
+  addEvent: (event: Omit<GameEvent, 'id' | 'active' | 'affectedStations'>) => void
   removeEvent: (eventId: string) => void
   
   addRepairJob: (bikeId: string, type: RepairJob['type']) => void
   startRepair: (jobId: string, employeeId?: string) => void
   completeRepair: (jobId: string) => void
+  setReturnStation: (repairJobId: string, stationId: string) => void
   
   updateRules: (rules: Partial<GameRules>) => void
   
@@ -59,14 +62,121 @@ let taskIdCounter = 5
 let eventIdCounter = 1
 let repairIdCounter = 4
 let bikeIdCounter = 200
+let dispatchLogIdCounter = 1
+let challengeHistoryIdCounter = 1
 
 const generateId = (prefix: string, counter: number) => `${prefix}-${String(counter).padStart(3, '0')}`
+
+const MAINTENANCE_STATION_ID = 'st-011'
+const CONCERT_CENTER_STATION_ID = 'st-010'
+const SUBWAY_STATION_ID = 'st-005'
 
 const VEHICLE_SPEEDS = {
   truck: 3,
   van: 4,
   scooter: 6,
   bike: 5,
+}
+
+const getStationsNear = (stations: Station[], centerId: string, count: number): string[] => {
+  const center = stations.find(s => s.id === centerId)
+  if (!center) return []
+  const sorted = stations
+    .filter(s => s.id !== centerId && s.type !== 'no_parking')
+    .map(s => ({ id: s.id, dist: calculateDistance(center.position, s.position) }))
+    .sort((a, b) => a.dist - b.dist)
+  return [centerId, ...sorted.slice(0, count - 1).map(s => s.id)]
+}
+
+const getRandomStations = (stations: Station[], count: number): string[] => {
+  const valid = stations.filter(s => s.type !== 'no_parking' && s.type !== 'maintenance')
+  const shuffled = [...valid].sort(() => Math.random() - 0.5)
+  return shuffled.slice(0, Math.min(count, shuffled.length)).map(s => s.id)
+}
+
+const getAllStations = (stations: Station[]): string[] => {
+  return stations.filter(s => s.type !== 'no_parking').map(s => s.id)
+}
+
+const generateAffectedStations = (type: EventType, stations: Station[]): string[] => {
+  switch (type) {
+    case 'concert':
+      return getStationsNear(stations, CONCERT_CENTER_STATION_ID, 5)
+    case 'subway_failure':
+      return getStationsNear(stations, SUBWAY_STATION_ID, 5)
+    case 'illegal_parking':
+      return getRandomStations(stations, 3)
+    case 'rain':
+      return getAllStations(stations)
+    case 'peak_hour':
+      return getAllStations(stations)
+    default:
+      return getAllStations(stations)
+  }
+}
+
+const findBestSourceStation = (stations: Station[], targetStationId: string, bikeCount: number): string => {
+  const maintenance = stations.find(s => s.id === MAINTENANCE_STATION_ID)
+  if (maintenance && maintenance.availableBikes >= bikeCount) {
+    return MAINTENANCE_STATION_ID
+  }
+  const target = stations.find(s => s.id === targetStationId)
+  if (!target) return MAINTENANCE_STATION_ID
+  const candidates = stations
+    .filter(s => 
+      s.id !== targetStationId && 
+      s.type !== 'no_parking' && 
+      s.availableBikes >= Math.ceil(bikeCount / 2) &&
+      (s.demandLevel || 50) < 60
+    )
+    .map(s => ({ id: s.id, dist: calculateDistance(target.position, s.position), available: s.availableBikes }))
+    .sort((a, b) => a.dist - b.dist)
+  if (candidates.length > 0) return candidates[0].id
+  return MAINTENANCE_STATION_ID
+}
+
+const getStationEventEffects = (
+  stationId: string,
+  events: GameEvent[],
+  currentTime: number
+): { demandMultiplier: number; speedMultiplier: number; violationMultiplier: number; batteryDrainMultiplier: number; priorityBoost: number } => {
+  const activeEvents = events.filter(e => 
+    currentTime >= e.startTime && 
+    currentTime < e.startTime + e.duration &&
+    e.affectedStations.includes(stationId)
+  )
+  return {
+    demandMultiplier: activeEvents.reduce((acc, e) => acc * (e.effects.demandMultiplier || 1), 1),
+    speedMultiplier: activeEvents.reduce((acc, e) => acc * (e.effects.speedMultiplier || 1), 1),
+    violationMultiplier: activeEvents.reduce((acc, e) => acc * (e.effects.parkingViolationRate || 1), 1),
+    batteryDrainMultiplier: activeEvents.reduce((acc, e) => acc * (e.effects.batteryDrainMultiplier || 1), 1),
+    priorityBoost: activeEvents.reduce((acc, e) => acc + (e.severity === 'severe' ? 3 : e.severity === 'moderate' ? 2 : 1), 0),
+  }
+}
+
+const computeRank = (mode: ChallengeMode, profit: number, satisfaction: number): number => {
+  if (mode === 'time_limit') {
+    if (profit >= 2000) return 1
+    if (profit >= 1500) return 2
+    if (profit >= 1000) return 3
+    if (profit >= 500) return 4
+    return 5
+  }
+  if (mode === 'low_budget') {
+    if (profit >= 3000) return 1
+    if (profit >= 2000) return 2
+    if (profit >= 1000) return 3
+    if (profit >= 500) return 4
+    return 5
+  }
+  if (mode === 'peak_guarantee') {
+    if (satisfaction >= 90) return 1
+    if (satisfaction >= 85) return 2
+    if (satisfaction >= 80) return 3
+    if (satisfaction >= 70) return 4
+    return 5
+  }
+  return 5
 }
 
 export const useGameStore = create<GameStore>((set, get) => ({
@@ -83,9 +193,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
   showChallengeSelect: true,
   gameOver: false,
   gameWon: false,
+  lossReason: undefined,
+  challengeHistory: [],
+  dispatchLogs: [],
+  challengeStart: 0,
   
   rules: { ...defaultRules },
-  stats: { ...defaultStats },
+  stats: { 
+    ...defaultStats,
+    todayStationStats: new Map(),
+  },
   stations: generateStations(),
   bikes: generateBikes(),
   tasks: initialTasks,
@@ -122,33 +239,30 @@ export const useGameStore = create<GameStore>((set, get) => ({
     let updatedTasks = [...state.tasks]
     let updatedEvents = [...state.events]
     let updatedRepairJobs = [...state.repairJobs]
+    let newDispatchLogs = [...state.dispatchLogs]
     let newMoney = state.money
-    let newStats = { ...state.stats }
+    let newStats = { 
+      ...state.stats,
+      todayTaskRevenue: { ...state.stats.todayTaskRevenue },
+      todayTaskPenalty: { ...state.stats.todayTaskPenalty },
+      todayStationStats: new Map(state.stats.todayStationStats),
+    }
+    let newLossReason = state.lossReason
 
     const hour = Math.floor(newTime / 60)
     const isPeakHour = (hour >= 7 && hour <= 9) || (hour >= 17 && hour <= 19)
 
-    const activeEvents = state.events.filter(e => 
-      newTime >= e.startTime && newTime < e.startTime + e.duration
-    )
-    
-    const demandMultiplier = activeEvents.reduce((acc, e) => 
-      acc * (e.effects.demandMultiplier || 1), 1
-    )
-    const speedMultiplier = activeEvents.reduce((acc, e) => 
-      acc * (e.effects.speedMultiplier || 1), 1
-    )
-    const violationMultiplier = activeEvents.reduce((acc, e) => 
-      acc * (e.effects.parkingViolationRate || 1), 1
-    )
-    const batteryDrainMultiplier = activeEvents.reduce((acc, e) => 
-      acc * (e.effects.batteryDrainMultiplier || 1), 1
-    )
+    const globalSpeedMultiplier = updatedEvents
+      .filter(e => newTime >= e.startTime && newTime < e.startTime + e.duration)
+      .reduce((acc, e) => acc * (e.effects.speedMultiplier || 1), 1)
 
     updatedBikes = updatedBikes.map(bike => {
       if (bike.status === 'riding' && bike.targetStationId) {
         const targetStation = updatedStations.find(s => s.id === bike.targetStationId)
         if (!targetStation) return bike
+
+        const stationEffects = getStationEventEffects(bike.rideStartStationId || '', updatedEvents, newTime)
+        const localSpeedMult = stationEffects.speedMultiplier > 1 ? stationEffects.speedMultiplier : globalSpeedMultiplier
 
         const dx = targetStation.position.x - bike.position.x
         const dy = targetStation.position.y - bike.position.y
@@ -168,18 +282,60 @@ export const useGameStore = create<GameStore>((set, get) => ({
           newStats.todayRevenue.rideFares += fare
           newStats.totalRides += 1
           
-          const newBattery = Math.max(0, bike.battery - rideDuration * 0.1 * batteryDrainMultiplier)
+          const startStationId = bike.rideStartStationId
+          const violationRateMult = stationEffects.violationMultiplier
+          const newBattery = Math.max(0, bike.battery - rideDuration * 0.1 * stationEffects.batteryDrainMultiplier)
           
-          const isViolation = Math.random() < state.stats.violationRate / 100 * violationMultiplier
+          const isViolation = Math.random() < state.stats.violationRate / 100 * violationRateMult
           
           if (isViolation) {
             newMoney += state.rules.illegalParkingFine
             newStats.todayRevenue.fines += state.rules.illegalParkingFine
             newStats.satisfaction = Math.max(0, newStats.satisfaction - 0.5)
+            
+            if (startStationId) {
+              const existing = newStats.todayStationStats.get(startStationId)
+              if (existing) {
+                newStats.todayStationStats.set(startStationId, {
+                  rides: existing.rides + 1,
+                  revenue: existing.revenue + fare,
+                  violations: existing.violations + 1,
+                  satisfactionContribution: existing.satisfactionContribution - 0.5,
+                })
+              } else {
+                const station = updatedStations.find(s => s.id === startStationId)
+                newStats.todayStationStats.set(startStationId, {
+                  rides: 1,
+                  revenue: fare,
+                  violations: 1,
+                  satisfactionContribution: -0.5,
+                })
+              }
+            }
           } else {
             newMoney -= state.rules.parkingGuideBonus
             newStats.todayExpenses.other += state.rules.parkingGuideBonus
             newStats.satisfaction = Math.min(100, newStats.satisfaction + 0.1)
+            
+            if (startStationId) {
+              const existing = newStats.todayStationStats.get(startStationId)
+              if (existing) {
+                newStats.todayStationStats.set(startStationId, {
+                  rides: existing.rides + 1,
+                  revenue: existing.revenue + fare,
+                  violations: existing.violations,
+                  satisfactionContribution: existing.satisfactionContribution + 0.1,
+                })
+              } else {
+                const station = updatedStations.find(s => s.id === startStationId)
+                newStats.todayStationStats.set(startStationId, {
+                  rides: 1,
+                  revenue: fare,
+                  violations: 0,
+                  satisfactionContribution: 0.1,
+                })
+              }
+            }
           }
           
           const stationIdx = updatedStations.findIndex(s => s.id === bike.targetStationId)
@@ -206,7 +362,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
           }
         }
 
-        const moveSpeed = 2 * speedMultiplier
+        const moveSpeed = 2 * localSpeedMult
         const ratio = Math.min(moveSpeed / dist, 1)
         
         return {
@@ -215,7 +371,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
             x: bike.position.x + dx * ratio,
             y: bike.position.y + dy * ratio,
           },
-          battery: Math.max(0, bike.battery - 0.05 * batteryDrainMultiplier * speed),
+          battery: Math.max(0, bike.battery - 0.05 * stationEffects.batteryDrainMultiplier * speed),
         }
       }
       return bike
@@ -223,15 +379,45 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     const availableBikeCount = updatedBikes.filter(b => b.status === 'available').length
     const demandBase = isPeakHour ? 0.3 : 0.1
-    const demandChance = demandBase * demandMultiplier * speed / 60
 
-    if (Math.random() < demandChance && availableBikeCount > 10) {
+    updatedStations = updatedStations.map(station => {
+      if (station.type === 'no_parking') return station
+      const stationEffects = getStationEventEffects(station.id, updatedEvents, newTime)
+      const localDemandChance = demandBase * stationEffects.demandMultiplier * speed / 60
+      
+      const newBoost = stationEffects.priorityBoost
+      const boostedUntil = newBoost > 0 ? newTime + 60 : (station.boostedUntil || 0)
+
+      return {
+        ...station,
+        dispatchPriorityBoost: newBoost,
+        boostedUntil,
+      }
+    })
+
+    if (Math.random() < demandBase * speed / 60 && availableBikeCount > 10) {
       const availableStations = updatedStations.filter(s => 
         s.type !== 'no_parking' && s.type !== 'maintenance' && s.availableBikes > 0
       )
       
       if (availableStations.length > 1) {
-        const startStation = availableStations[Math.floor(Math.random() * availableStations.length)]
+        const weightedStations: { station: Station; weight: number }[] = []
+        availableStations.forEach(s => {
+          const stationEffects = getStationEventEffects(s.id, updatedEvents, newTime)
+          const weight = (s.availableBikes > 0 ? 1 : 0) * stationEffects.demandMultiplier
+          weightedStations.push({ station: s, weight })
+        })
+        const totalWeight = weightedStations.reduce((acc, ws) => acc + ws.weight, 0)
+        let r = Math.random() * totalWeight
+        let startStation = weightedStations[0].station
+        for (const ws of weightedStations) {
+          r -= ws.weight
+          if (r <= 0) {
+            startStation = ws.station
+            break
+          }
+        }
+
         const endStations = availableStations.filter(s => s.id !== startStation.id)
         const endStation = endStations[Math.floor(Math.random() * endStations.length)]
         
@@ -276,17 +462,23 @@ export const useGameStore = create<GameStore>((set, get) => ({
         const targetStation = updatedStations.find(s => s.id === emp.targetStationId)
         if (!targetStation) return emp
 
+        const task = updatedTasks.find(t => t.id === emp.currentTaskId)
+        const sourceStationId = task?.sourceStationId
+        
+        const effectiveSpeedMult = globalSpeedMultiplier
+
         const dx = targetStation.position.x - emp.position.x
         const dy = targetStation.position.y - emp.position.y
         const dist = Math.sqrt(dx * dx + dy * dy)
         
-        const vehicleSpeed = VEHICLE_SPEEDS[emp.vehicle] * speedMultiplier
+        const vehicleSpeed = VEHICLE_SPEEDS[emp.vehicle] * effectiveSpeedMult
         
         if (dist < 5) {
-          const task = updatedTasks.find(t => t.id === emp.currentTaskId)
-          
           if (task) {
             if (emp.currentAction === 'traveling') {
+              if (task.type === 'replenish' && sourceStationId && emp.targetStationId === sourceStationId) {
+                return { ...emp, currentAction: 'loading' as const, actionProgress: 0 }
+              }
               return { ...emp, currentAction: 'loading' as const, actionProgress: 0 }
             }
             
@@ -295,106 +487,270 @@ export const useGameStore = create<GameStore>((set, get) => ({
             
             if (newProgress >= 100) {
               if (task.type === 'replenish') {
-                const stationIdx = updatedStations.findIndex(s => s.id === task.stationId)
-                const bikesToAdd = Math.min(task.bikeCount || 5, emp.currentLoad)
-                
-                if (stationIdx >= 0 && bikesToAdd > 0) {
-                  const station = updatedStations[stationIdx]
-                  updatedStations[stationIdx] = {
-                    ...station,
-                    availableBikes: station.availableBikes + bikesToAdd,
+                if (sourceStationId && emp.targetStationId === sourceStationId) {
+                  const sourceIdx = updatedStations.findIndex(s => s.id === sourceStationId)
+                  const bikesToLoad = Math.min(task.bikeCount || 5, emp.capacity)
+                  let actualLoaded = 0
+                  
+                  if (sourceIdx >= 0) {
+                    const sourceStation = updatedStations[sourceIdx]
+                    const availableInSource = updatedBikes.filter(b => 
+                      b.stationId === sourceStationId && b.status === 'available'
+                    )
+                    actualLoaded = Math.min(bikesToLoad, availableInSource.length, sourceStation.availableBikes)
+                    
+                    const toLoad = availableInSource.slice(0, actualLoaded)
+                    toLoad.forEach(bike => {
+                      const bikeIdx = updatedBikes.findIndex(b => b.id === bike.id)
+                      if (bikeIdx >= 0) {
+                        updatedBikes[bikeIdx] = {
+                          ...updatedBikes[bikeIdx],
+                          status: 'transit' as const,
+                          stationId: null,
+                          inTransit: 'from_station' as const,
+                          transitSourceId: sourceStationId,
+                          transitTargetId: task.stationId,
+                          dispatchTime: newTime,
+                        }
+                      }
+                    })
+                    
+                    updatedStations[sourceIdx] = {
+                      ...sourceStation,
+                      availableBikes: Math.max(0, sourceStation.availableBikes - actualLoaded),
+                    }
+                    
+                    newDispatchLogs.push({
+                      id: generateId('dl', dispatchLogIdCounter++),
+                      time: newTime,
+                      type: 'pickup',
+                      stationFrom: sourceStationId,
+                      stationTo: task.stationId,
+                      bikeCount: actualLoaded,
+                      employeeId: emp.id,
+                    })
                   }
                   
-                  for (let i = 0; i < bikesToAdd; i++) {
-                    const newBike: Bike = {
-                      id: generateId('bk', bikeIdCounter++),
-                      battery: 80 + Math.random() * 20,
-                      status: 'available',
-                      stationId: task.stationId,
-                      position: { ...station.position },
-                      lockWorking: true,
-                      brakeWorking: true,
-                      gpsWorking: true,
-                      totalRides: 0,
-                      lastMaintenance: 0,
+                  return {
+                    ...emp,
+                    currentAction: 'traveling' as const,
+                    targetStationId: task.stationId,
+                    currentLoad: actualLoaded,
+                    carryingBikes: updatedBikes.filter(b => b.status === 'transit' && b.transitTargetId === task.stationId).map(b => b.id),
+                    actionProgress: 0,
+                  }
+                } else {
+                  const stationIdx = updatedStations.findIndex(s => s.id === task.stationId)
+                  const bikesToDrop = emp.currentLoad || (task.bikeCount || 5)
+                  
+                  if (stationIdx >= 0 && bikesToDrop > 0) {
+                    const station = updatedStations[stationIdx]
+                    const inTransitToStation = updatedBikes.filter(b => 
+                      b.status === 'transit' && b.transitTargetId === task.stationId
+                    )
+                    const toDrop = inTransitToStation.slice(0, bikesToDrop)
+                    
+                    toDrop.forEach(bike => {
+                      const bikeIdx = updatedBikes.findIndex(b => b.id === bike.id)
+                      if (bikeIdx >= 0) {
+                        updatedBikes[bikeIdx] = {
+                          ...updatedBikes[bikeIdx],
+                          status: 'available' as const,
+                          stationId: task.stationId,
+                          position: { ...station.position },
+                          inTransit: null,
+                          transitSourceId: undefined,
+                          transitTargetId: undefined,
+                        }
+                      }
+                    })
+                    
+                    const remainingNeeded = (task.bikeCount || 5) - toDrop.length
+                    for (let i = 0; i < remainingNeeded; i++) {
+                      const newBike: Bike = {
+                        id: generateId('bk', bikeIdCounter++),
+                        battery: 80 + Math.random() * 20,
+                        status: 'available',
+                        stationId: task.stationId,
+                        position: { ...station.position },
+                        lockWorking: true,
+                        brakeWorking: true,
+                        gpsWorking: true,
+                        totalRides: 0,
+                        lastMaintenance: 0,
+                        inTransit: null,
+                      }
+                      updatedBikes.push(newBike)
                     }
-                    updatedBikes.push(newBike)
+                    
+                    updatedStations[stationIdx] = {
+                      ...station,
+                      availableBikes: station.availableBikes + toDrop.length + remainingNeeded,
+                    }
+                    
+                    newDispatchLogs.push({
+                      id: generateId('dl', dispatchLogIdCounter++),
+                      time: newTime,
+                      type: 'dropoff',
+                      stationFrom: sourceStationId,
+                      stationTo: task.stationId,
+                      bikeCount: toDrop.length + remainingNeeded,
+                      employeeId: emp.id,
+                    })
                   }
-                }
-                
-                const taskIdx = updatedTasks.findIndex(t => t.id === task.id)
-                if (taskIdx >= 0) {
-                  updatedTasks[taskIdx] = {
-                    ...updatedTasks[taskIdx],
-                    status: 'completed' as const,
-                    progress: 100,
+                  
+                  const taskIdx = updatedTasks.findIndex(t => t.id === task.id)
+                  if (taskIdx >= 0) {
+                    updatedTasks[taskIdx] = {
+                      ...updatedTasks[taskIdx],
+                      status: 'completed' as const,
+                      progress: 100,
+                      completedAt: newTime,
+                      actualReward: task.reward,
+                    }
                   }
-                }
-                
-                newMoney += task.reward
-                newStats.completedTasks += 1
-                newStats.satisfaction = Math.min(100, newStats.satisfaction + 0.5)
-                
-                return {
-                  ...emp,
-                  status: 'idle' as const,
-                  currentAction: 'idle' as const,
-                  currentTaskId: null,
-                  targetStationId: null,
-                  currentLoad: 0,
-                  carryingBikes: [],
-                  actionProgress: 0,
+                  
+                  newMoney += task.reward
+                  newStats.todayTaskRevenue.replenish += task.reward
+                  newStats.completedTasks += 1
+                  newStats.satisfaction = Math.min(100, newStats.satisfaction + 0.5)
+                  
+                  return {
+                    ...emp,
+                    status: 'idle' as const,
+                    currentAction: 'idle' as const,
+                    currentTaskId: null,
+                    targetStationId: null,
+                    currentLoad: 0,
+                    carryingBikes: [],
+                    actionProgress: 0,
+                  }
                 }
               }
               
               if (task.type === 'recycle') {
                 const stationIdx = updatedStations.findIndex(s => s.id === task.stationId)
                 const bikesToRecycle = task.bikeCount || 2
+                const maintenanceStation = updatedStations.find(s => s.id === MAINTENANCE_STATION_ID)
                 
-                if (stationIdx >= 0) {
-                  const station = updatedStations[stationIdx]
-                  const brokenBikesInStation = updatedBikes.filter(b => 
-                    b.stationId === task.stationId && b.status === 'broken'
+                if (emp.currentAction === 'loading' && emp.targetStationId === task.stationId) {
+                  if (stationIdx >= 0) {
+                    const station = updatedStations[stationIdx]
+                    const brokenBikesInStation = updatedBikes.filter(b => 
+                      b.stationId === task.stationId && b.status === 'broken'
+                    )
+                    
+                    const toRecycle = brokenBikesInStation.slice(0, bikesToRecycle)
+                    
+                    toRecycle.forEach(bike => {
+                      const bikeIdx = updatedBikes.findIndex(b => b.id === bike.id)
+                      if (bikeIdx >= 0) {
+                        updatedBikes[bikeIdx] = {
+                          ...updatedBikes[bikeIdx],
+                          status: 'transit' as const,
+                          stationId: null,
+                          inTransit: 'to_repair' as const,
+                          transitSourceId: task.stationId,
+                          transitTargetId: MAINTENANCE_STATION_ID,
+                          dispatchTime: newTime,
+                        }
+                      }
+                    })
+                    
+                    updatedStations[stationIdx] = {
+                      ...station,
+                      brokenBikes: Math.max(0, station.brokenBikes - toRecycle.length),
+                    }
+                    
+                    newDispatchLogs.push({
+                      id: generateId('dl', dispatchLogIdCounter++),
+                      time: newTime,
+                      type: 'recycle',
+                      stationFrom: task.stationId,
+                      stationTo: MAINTENANCE_STATION_ID,
+                      bikeCount: toRecycle.length,
+                      employeeId: emp.id,
+                    })
+                  }
+                  
+                  return {
+                    ...emp,
+                    currentAction: 'traveling' as const,
+                    targetStationId: MAINTENANCE_STATION_ID,
+                    currentLoad: bikesToRecycle,
+                    actionProgress: 0,
+                  }
+                } else if (emp.targetStationId === MAINTENANCE_STATION_ID) {
+                  const inTransitToRepair = updatedBikes.filter(b => 
+                    b.status === 'transit' && b.inTransit === 'to_repair'
                   )
                   
-                  const toRecycle = brokenBikesInStation.slice(0, bikesToRecycle)
-                  
-                  toRecycle.forEach(bike => {
+                  inTransitToRepair.forEach(bike => {
                     const bikeIdx = updatedBikes.findIndex(b => b.id === bike.id)
                     if (bikeIdx >= 0) {
                       updatedBikes[bikeIdx] = {
                         ...updatedBikes[bikeIdx],
-                        status: 'transit' as const,
-                        stationId: null,
+                        status: 'maintenance' as const,
+                        stationId: MAINTENANCE_STATION_ID,
+                        position: maintenanceStation ? { ...maintenanceStation.position } : bike.position,
+                        inTransit: null,
+                        transitSourceId: undefined,
+                        transitTargetId: undefined,
                       }
+                      
+                      const repairTypes: RepairJob['type'][] = ['brake', 'lock', 'gps', 'battery']
+                      const randomType = repairTypes[Math.floor(Math.random() * repairTypes.length)]
+                      const costs = { brake: 50, battery: 100, gps: 80, lock: 30 }
+                      const durations = { brake: 30, battery: 20, gps: 45, lock: 15 }
+                      
+                      const newJob: RepairJob = {
+                        id: generateId('rp', repairIdCounter++),
+                        bikeId: bike.id,
+                        type: randomType,
+                        status: 'queued',
+                        cost: costs[randomType],
+                        duration: durations[randomType],
+                        progress: 0,
+                        createdAt: newTime,
+                      }
+                      updatedRepairJobs.push(newJob)
                     }
                   })
                   
-                  updatedStations[stationIdx] = {
-                    ...station,
-                    brokenBikes: Math.max(0, station.brokenBikes - toRecycle.length),
+                  if (maintenanceStation) {
+                    const maintIdx = updatedStations.findIndex(s => s.id === MAINTENANCE_STATION_ID)
+                    if (maintIdx >= 0) {
+                      updatedStations[maintIdx] = {
+                        ...updatedStations[maintIdx],
+                        availableBikes: updatedStations[maintIdx].availableBikes + inTransitToRepair.length,
+                      }
+                    }
                   }
-                }
-                
-                const taskIdx = updatedTasks.findIndex(t => t.id === task.id)
-                if (taskIdx >= 0) {
-                  updatedTasks[taskIdx] = {
-                    ...updatedTasks[taskIdx],
-                    status: 'completed' as const,
-                    progress: 100,
+                  
+                  const taskIdx = updatedTasks.findIndex(t => t.id === task.id)
+                  if (taskIdx >= 0) {
+                    updatedTasks[taskIdx] = {
+                      ...updatedTasks[taskIdx],
+                      status: 'completed' as const,
+                      progress: 100,
+                      completedAt: newTime,
+                      actualReward: task.reward,
+                    }
                   }
-                }
-                
-                newMoney += task.reward
-                newStats.completedTasks += 1
-                
-                return {
-                  ...emp,
-                  status: 'idle' as const,
-                  currentAction: 'idle' as const,
-                  currentTaskId: null,
-                  targetStationId: null,
-                  actionProgress: 0,
+                  
+                  newMoney += task.reward
+                  newStats.todayTaskRevenue.recycle += task.reward
+                  newStats.completedTasks += 1
+                  
+                  return {
+                    ...emp,
+                    status: 'idle' as const,
+                    currentAction: 'idle' as const,
+                    currentTaskId: null,
+                    targetStationId: null,
+                    currentLoad: 0,
+                    actionProgress: 0,
+                  }
                 }
               }
               
@@ -437,10 +793,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
                     ...updatedTasks[taskIdx],
                     status: 'completed' as const,
                     progress: 100,
+                    completedAt: newTime,
+                    actualReward: task.reward,
                   }
                 }
                 
                 newMoney += task.reward
+                newStats.todayTaskRevenue.battery += task.reward
                 newStats.completedTasks += 1
                 
                 return {
@@ -460,10 +819,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
                     ...updatedTasks[taskIdx],
                     status: 'completed' as const,
                     progress: 100,
+                    completedAt: newTime,
+                    actualReward: task.reward,
                   }
                 }
                 
                 newMoney += task.reward
+                newStats.todayTaskRevenue.complaint += task.reward
                 newStats.completedTasks += 1
                 newStats.satisfaction = Math.min(100, newStats.satisfaction + 2)
                 
@@ -513,17 +875,33 @@ export const useGameStore = create<GameStore>((set, get) => ({
           const bikeIdx = updatedBikes.findIndex(b => b.id === job.bikeId)
           if (bikeIdx >= 0) {
             const bike = updatedBikes[bikeIdx]
-            const updates: Partial<Bike> = { status: 'available' as const }
+            const updates: Partial<Bike> = {}
             
             if (job.type === 'brake') updates.brakeWorking = true
             if (job.type === 'lock') updates.lockWorking = true
             if (job.type === 'gps') updates.gpsWorking = true
             if (job.type === 'battery') updates.battery = 100
             
+            if (job.returnStationId && job.returnStationId !== MAINTENANCE_STATION_ID) {
+              updates.status = 'transit' as const
+              updates.inTransit = 'to_station' as const
+              updates.transitSourceId = MAINTENANCE_STATION_ID
+              updates.transitTargetId = job.returnStationId
+              updates.stationId = null
+              updates.dispatchTime = newTime
+            } else {
+              updates.status = 'available' as const
+              const maintenanceStation = updatedStations.find(s => s.id === MAINTENANCE_STATION_ID)
+              if (maintenanceStation) {
+                updates.position = { ...maintenanceStation.position }
+                updates.stationId = MAINTENANCE_STATION_ID
+              }
+            }
+            
             updatedBikes[bikeIdx] = { ...bike, ...updates }
             
-            const maintenanceStation = updatedStations.find(s => s.type === 'maintenance')
-            if (maintenanceStation) {
+            const maintenanceStation = updatedStations.find(s => s.id === MAINTENANCE_STATION_ID)
+            if (maintenanceStation && !job.returnStationId) {
               const stationIdx = updatedStations.findIndex(s => s.id === maintenanceStation.id)
               if (stationIdx >= 0) {
                 updatedStations[stationIdx] = {
@@ -532,17 +910,71 @@ export const useGameStore = create<GameStore>((set, get) => ({
                 }
               }
             }
+            
+            newDispatchLogs.push({
+              id: generateId('dl', dispatchLogIdCounter++),
+              time: newTime,
+              type: 'repair_done',
+              stationFrom: MAINTENANCE_STATION_ID,
+              stationTo: job.returnStationId || MAINTENANCE_STATION_ID,
+              bikeCount: 1,
+              employeeId: job.assignedTo,
+            })
           }
           
           newMoney -= job.cost
           newStats.todayExpenses.repairs += job.cost
           
-          return { ...job, status: 'done' as const, progress: 100 }
+          return { ...job, status: 'done' as const, progress: 100, completedAt: newTime }
         }
         
         return { ...job, progress: newProgress }
       }
       return job
+    })
+
+    updatedBikes = updatedBikes.map(bike => {
+      if (bike.status === 'transit' && bike.inTransit === 'to_station' && bike.transitTargetId) {
+        const targetStation = updatedStations.find(s => s.id === bike.transitTargetId)
+        if (!targetStation) return bike
+        
+        const dx = targetStation.position.x - bike.position.x
+        const dy = targetStation.position.y - bike.position.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        
+        if (dist < 5) {
+          const stationIdx = updatedStations.findIndex(s => s.id === bike.transitTargetId)
+          if (stationIdx >= 0) {
+            updatedStations[stationIdx] = {
+              ...updatedStations[stationIdx],
+              availableBikes: updatedStations[stationIdx].availableBikes + 1,
+            }
+          }
+          
+          return {
+            ...bike,
+            status: 'available' as const,
+            stationId: bike.transitTargetId,
+            position: { ...targetStation.position },
+            inTransit: null,
+            transitSourceId: undefined,
+            transitTargetId: undefined,
+            dispatchTime: undefined,
+          }
+        }
+        
+        const moveSpeed = 2 * globalSpeedMultiplier
+        const ratio = Math.min(moveSpeed / dist, 1)
+        
+        return {
+          ...bike,
+          position: {
+            x: bike.position.x + dx * ratio,
+            y: bike.position.y + dy * ratio,
+          },
+        }
+      }
+      return bike
     })
 
     const taskGenerationChance = 0.02 * speed
@@ -615,6 +1047,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         reward: rewards[type],
         penalty: penalties[type],
         bikeCount: bikeCounts[type],
+        sourceStationId: type === 'replenish' ? findBestSourceStation(updatedStations, station.id, bikeCounts[type]) : undefined,
       }
       updatedTasks.push(newTask)
     }
@@ -627,19 +1060,54 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const lowBatteryBikes = stationBikes.filter(b => b.battery < state.rules.lowBatteryThreshold)
       
       const usageRate = station.capacity > 0 ? stationBikes.length / station.capacity : 0
-      const demandLevel = station.type === 'hot' ? 70 + Math.random() * 30 : 
-                         station.type === 'hub' ? 60 + Math.random() * 30 :
-                         30 + Math.random() * 40
+      const baseDemand = station.baseDemandLevel ?? (
+        station.type === 'hot' ? 70 + Math.random() * 30 : 
+        station.type === 'hub' ? 60 + Math.random() * 30 :
+        30 + Math.random() * 40
+      )
+      const baseCongestion = station.baseCongestionLevel ?? (usageRate * 80 + Math.random() * 20)
       
-      const adjustedDemand = demandLevel * demandMultiplier
+      const stationEffects = getStationEventEffects(station.id, updatedEvents, newTime)
+      const hasActiveEvent = stationEffects.demandMultiplier !== 1 || stationEffects.priorityBoost > 0
+      
+      let targetDemand = baseDemand * stationEffects.demandMultiplier
+      let targetCongestion = baseCongestion * (1 + (stationEffects.demandMultiplier - 1) * 0.5)
+      
+      let newDemandLevel = station.demandLevel
+      let newCongestionLevel = station.congestionLevel
+      
+      const recoveryRate = 0.05 * speed
+      if (hasActiveEvent) {
+        newDemandLevel = station.demandLevel + (targetDemand - station.demandLevel) * 0.1 * speed
+        newCongestionLevel = station.congestionLevel + (targetCongestion - station.congestionLevel) * 0.1 * speed
+      } else {
+        if (Math.abs(station.demandLevel - baseDemand) > 0.5) {
+          newDemandLevel = station.demandLevel + (baseDemand - station.demandLevel) * recoveryRate
+        } else {
+          newDemandLevel = baseDemand
+        }
+        if (Math.abs(station.congestionLevel - baseCongestion) > 0.5) {
+          newCongestionLevel = station.congestionLevel + (baseCongestion - station.congestionLevel) * recoveryRate
+        } else {
+          newCongestionLevel = baseCongestion
+        }
+      }
+      
+      let newBoost = station.dispatchPriorityBoost || 0
+      if (stationEffects.priorityBoost > 0) {
+        newBoost = stationEffects.priorityBoost
+      } else if (newBoost > 0 && station.boostedUntil && newTime > station.boostedUntil) {
+        newBoost = Math.max(0, newBoost - 0.5 * speed)
+      }
       
       return {
         ...station,
         availableBikes: stationBikes.length,
         brokenBikes: brokenBikes.length,
         lowBatteryBikes: lowBatteryBikes.length,
-        demandLevel: Math.min(100, adjustedDemand),
-        congestionLevel: Math.min(100, usageRate * 80 + Math.random() * 20),
+        demandLevel: Math.min(100, newDemandLevel),
+        congestionLevel: Math.min(100, newCongestionLevel),
+        dispatchPriorityBoost: newBoost,
       }
     })
 
@@ -657,6 +1125,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
     newStats.violationRate = 5 + (dayChanged ? 0 : Math.random() * 2 - 1)
 
     if (dayChanged) {
+      const stationStatsArray = Array.from(newStats.todayStationStats.entries()).map(([stationId, data]) => {
+        const station = updatedStations.find(s => s.id === stationId)
+        return {
+          stationId,
+          stationName: station?.name || stationId,
+          rides: data.rides,
+          revenue: data.revenue,
+          violations: data.violations,
+          satisfactionContribution: data.satisfactionContribution,
+        }
+      })
+      
       const dailyStat: DailyStats = {
         day: state.day,
         revenue: {
@@ -682,12 +1162,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
         completedTasks: newStats.completedTasks,
         failedTasks: newStats.failedTasks,
         eventsTriggered: state.events.length,
+        taskRevenue: { ...newStats.todayTaskRevenue },
+        taskPenalty: { ...newStats.todayTaskPenalty },
+        stationStats: stationStatsArray,
       }
       
       newStats.dailyHistory = [...newStats.dailyHistory, dailyStat]
       
       newStats.todayRevenue = { rideFares: 0, memberships: 0, fines: 0, other: 0 }
       newStats.todayExpenses = { repairs: 0, batteries: 0, salaries: 0, penalties: 0, other: 0 }
+      newStats.todayTaskRevenue = { replenish: 0, recycle: 0, battery: 0, complaint: 0 }
+      newStats.todayTaskPenalty = { replenish: 0, recycle: 0, battery: 0, complaint: 0 }
+      newStats.todayStationStats = new Map()
     }
 
     newStats.revenue = newStats.dailyHistory.reduce((sum, d) => sum + d.revenue.total, 0) 
@@ -697,14 +1183,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     let gameOver: boolean = state.gameOver
     let gameWon: boolean = state.gameWon
+    let updatedChallengeHistory = [...state.challengeHistory]
     
-    if (state.challengeMode !== 'none' && state.challengeConfig) {
+    if (state.challengeMode !== 'none' && state.challengeConfig && !gameOver) {
       const config = state.challengeConfig
       
       if (config.timeLimit && newTime >= config.timeLimit && state.day === 1) {
         const profit = newMoney - config.startMoney
         if (config.targetProfit && profit >= config.targetProfit) {
           gameWon = true
+        } else {
+          gameOver = true
+          gameWon = false
+          newLossReason = '限时挑战未达利润目标'
         }
         gameOver = true
       }
@@ -713,13 +1204,44 @@ export const useGameStore = create<GameStore>((set, get) => ({
         if (newStats.satisfaction < config.targetSatisfaction && isPeakHour) {
           gameOver = true
           gameWon = false
+          newLossReason = '高峰时段满意度低于目标'
         }
       }
       
       if (config.mode === 'low_budget' && newMoney < 0) {
         gameOver = true
         gameWon = false
+        newLossReason = '资金不足，预算耗尽'
       }
+    }
+
+    if (gameOver && state.challengeMode !== 'none' && state.challengeConfig && !state.gameOver) {
+      const config = state.challengeConfig
+      const profit = newMoney - config.startMoney
+      const entry: ChallengeHistoryEntry = {
+        id: generateId('ch', challengeHistoryIdCounter++),
+        mode: state.challengeMode,
+        title: config.title,
+        startTime: state.challengeStart,
+        endTime: Date.now(),
+        totalDays: newDay - 1 + (newTime / (24 * 60)),
+        result: gameWon ? 'won' : 'lost',
+        lossReason: gameWon ? undefined : newLossReason,
+        startMoney: config.startMoney,
+        endMoney: newMoney,
+        profit,
+        targetProfit: config.targetProfit,
+        finalSatisfaction: newStats.satisfaction,
+        targetSatisfaction: config.targetSatisfaction,
+        completedTasks: newStats.completedTasks,
+        failedTasks: newStats.failedTasks,
+        totalRides: newStats.totalRides,
+        totalRevenue: newStats.revenue,
+        totalExpenses: newStats.expenses,
+        reward: gameWon ? config.reward : 0,
+        rank: computeRank(state.challengeMode, profit, newStats.satisfaction),
+      }
+      updatedChallengeHistory.push(entry)
     }
 
     set({
@@ -731,10 +1253,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
       tasks: updatedTasks,
       events: updatedEvents,
       repairJobs: updatedRepairJobs,
+      dispatchLogs: newDispatchLogs,
       money: newMoney,
       stats: newStats,
       gameOver,
       gameWon,
+      lossReason: newLossReason,
+      challengeHistory: updatedChallengeHistory,
     })
   },
 
@@ -742,6 +1267,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const task = state.tasks.find(t => t.id === taskId)
     const employee = state.employees.find(e => e.id === employeeId)
     if (!task || !employee || employee.status !== 'idle') return state
+
+    let targetStationId = task.stationId
+    if (task.type === 'replenish' && task.sourceStationId) {
+      targetStationId = task.sourceStationId
+    }
+    if (task.type === 'recycle') {
+      targetStationId = task.stationId
+    }
 
     return {
       tasks: state.tasks.map(t => 
@@ -753,7 +1286,42 @@ export const useGameStore = create<GameStore>((set, get) => ({
           status: 'working' as const, 
           currentAction: 'traveling' as const,
           currentTaskId: taskId,
-          targetStationId: task.stationId,
+          targetStationId: targetStationId,
+          actionProgress: 0,
+        } : e
+      ),
+    }
+  }),
+
+  assignTaskWithSource: (taskId, employeeId, sourceStationId) => set((state) => {
+    const task = state.tasks.find(t => t.id === taskId)
+    const employee = state.employees.find(e => e.id === employeeId)
+    if (!task || !employee || employee.status !== 'idle') return state
+
+    const effectiveSource = sourceStationId || task.sourceStationId || 
+      (task.type === 'replenish' ? findBestSourceStation(state.stations, task.stationId, task.bikeCount || 5) : undefined)
+
+    let targetStationId = task.stationId
+    if (task.type === 'replenish' && effectiveSource) {
+      targetStationId = effectiveSource
+    }
+
+    return {
+      tasks: state.tasks.map(t => 
+        t.id === taskId ? { 
+          ...t, 
+          status: 'in_progress' as const, 
+          assignedTo: employeeId,
+          sourceStationId: effectiveSource,
+        } : t
+      ),
+      employees: state.employees.map(e => 
+        e.id === employeeId ? { 
+          ...e, 
+          status: 'working' as const, 
+          currentAction: 'traveling' as const,
+          currentTaskId: taskId,
+          targetStationId: targetStationId,
           actionProgress: 0,
         } : e
       ),
@@ -764,9 +1332,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const task = state.tasks.find(t => t.id === taskId)
     if (!task) return state
 
+    const newTodayTaskRevenue = { ...state.stats.todayTaskRevenue }
+    newTodayTaskRevenue[task.type] += task.reward
+
     return {
       tasks: state.tasks.map(t => 
-        t.id === taskId ? { ...t, status: 'completed' as const, progress: 100 } : t
+        t.id === taskId ? { ...t, status: 'completed' as const, progress: 100, completedAt: state.time, actualReward: task.reward } : t
       ),
       employees: state.employees.map(e => 
         e.currentTaskId === taskId ? { 
@@ -783,6 +1354,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         ...state.stats,
         completedTasks: state.stats.completedTasks + 1,
         satisfaction: Math.min(100, state.stats.satisfaction + 1),
+        todayTaskRevenue: newTodayTaskRevenue,
       }
     }
   }),
@@ -791,9 +1363,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const task = state.tasks.find(t => t.id === taskId)
     if (!task) return state
 
+    const newTodayTaskPenalty = { ...state.stats.todayTaskPenalty }
+    newTodayTaskPenalty[task.type] += task.penalty
+
     return {
       tasks: state.tasks.map(t => 
-        t.id === taskId ? { ...t, status: 'failed' as const, progress: 0 } : t
+        t.id === taskId ? { ...t, status: 'failed' as const, progress: 0, actualPenalty: task.penalty } : t
       ),
       employees: state.employees.map(e => 
         e.currentTaskId === taskId ? { 
@@ -812,12 +1387,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
         todayExpenses: {
           ...state.stats.todayExpenses,
           penalties: state.stats.todayExpenses.penalties + task.penalty,
-        }
+        },
+        todayTaskPenalty: newTodayTaskPenalty,
       }
     }
   }),
 
   addTask: (task) => set((state) => {
+    const sourceStationId = task.type === 'replenish' 
+      ? findBestSourceStation(state.stations, task.stationId, task.bikeCount || 5)
+      : undefined
     const newTask: Task = {
       ...task,
       id: generateId('task', taskIdCounter++),
@@ -825,12 +1404,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
       progress: 0,
       status: 'pending',
       assignedTo: null,
+      sourceStationId,
     }
     return { tasks: [...state.tasks, newTask] }
   }),
 
   updateTaskPriority: (taskId, priority) => set((state) => ({
     tasks: state.tasks.map(t => t.id === taskId ? { ...t, priority } : t)
+  })),
+
+  setTaskSourceStation: (taskId, sourceStationId) => set((state) => ({
+    tasks: state.tasks.map(t => t.id === taskId ? { ...t, sourceStationId } : t)
   })),
 
   updateEmployeeRoute: (employeeId, route) => set((state) => ({
@@ -846,10 +1430,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
   })),
 
   addEvent: (event) => set((state) => {
+    const affectedStations = generateAffectedStations(event.type, state.stations)
     const newEvent: GameEvent = {
       ...event,
       id: `event-${eventIdCounter++}`,
       active: true,
+      affectedStations,
     }
     return { events: [...state.events, newEvent] }
   }),
@@ -889,18 +1475,41 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const job = state.repairJobs.find(j => j.id === jobId)
     if (!job) return state
 
-    const bikeUpdates: Partial<Bike> = { status: 'available' }
+    const bikeUpdates: Partial<Bike> = {}
     if (job.type === 'brake') bikeUpdates.brakeWorking = true
     if (job.type === 'lock') bikeUpdates.lockWorking = true
     if (job.type === 'gps') bikeUpdates.gpsWorking = true
     if (job.type === 'battery') bikeUpdates.battery = 100
+    
+    if (job.returnStationId && job.returnStationId !== MAINTENANCE_STATION_ID) {
+      bikeUpdates.status = 'transit' as const
+      bikeUpdates.inTransit = 'to_station' as const
+      bikeUpdates.transitSourceId = MAINTENANCE_STATION_ID
+      bikeUpdates.transitTargetId = job.returnStationId
+      bikeUpdates.stationId = null
+      bikeUpdates.dispatchTime = state.time
+    } else {
+      bikeUpdates.status = 'available' as const
+      bikeUpdates.stationId = MAINTENANCE_STATION_ID
+    }
+
+    const newLogs = [...state.dispatchLogs, {
+      id: generateId('dl', dispatchLogIdCounter++),
+      time: state.time,
+      type: 'repair_done' as const,
+      stationFrom: MAINTENANCE_STATION_ID,
+      stationTo: job.returnStationId || MAINTENANCE_STATION_ID,
+      bikeCount: 1,
+      employeeId: job.assignedTo,
+    }]
 
     return {
       repairJobs: state.repairJobs.map(j => 
-        j.id === jobId ? { ...j, status: 'done' as const, progress: 100 } : j
+        j.id === jobId ? { ...j, status: 'done' as const, progress: 100, completedAt: state.time } : j
       ),
       bikes: state.bikes.map(b => b.id === job.bikeId ? { ...b, ...bikeUpdates } : b),
       money: state.money - job.cost,
+      dispatchLogs: newLogs,
       stats: {
         ...state.stats,
         todayExpenses: {
@@ -910,6 +1519,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
     }
   }),
+
+  setReturnStation: (repairJobId, stationId) => set((state) => ({
+    repairJobs: state.repairJobs.map(j => 
+      j.id === repairJobId ? { ...j, returnStationId: stationId } : j
+    )
+  })),
 
   updateRules: (rules) => set((state) => ({
     rules: { ...state.rules, ...rules }
@@ -959,17 +1574,26 @@ export const useGameStore = create<GameStore>((set, get) => ({
       gameStarted: false,
       challengeMode: mode,
       challengeConfig: config,
+      challengeStart: Date.now(),
       stations,
       bikes,
-      tasks: initialTasks,
+      tasks: initialTasks.map(t => ({
+        ...t,
+        sourceStationId: t.type === 'replenish' ? findBestSourceStation(stations, t.stationId, t.bikeCount || 5) : undefined,
+      })),
       employees: generateEmployees(),
       events: [],
       repairJobs: initialRepairJobs,
+      dispatchLogs: [],
+      lossReason: undefined,
       stats: { 
         ...defaultStats,
         dailyHistory: [],
         todayRevenue: { rideFares: 0, memberships: 0, fines: 0, other: 0 },
         todayExpenses: { repairs: 0, batteries: 0, salaries: 0, penalties: 0, other: 0 },
+        todayTaskRevenue: { replenish: 0, recycle: 0, battery: 0, complaint: 0 },
+        todayTaskPenalty: { replenish: 0, recycle: 0, battery: 0, complaint: 0 },
+        todayStationStats: new Map(),
       },
       showChallengeSelect: false,
       gameOver: false,
@@ -982,10 +1606,54 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const config = state.challengeConfig
     const reward = won && config ? config.reward : 0
     
+    let updatedChallengeHistory = [...state.challengeHistory]
+    
+    if (config && state.challengeMode !== 'none') {
+      const profit = state.money + reward - config.startMoney
+      let lossReasonVal: string | undefined
+      if (!won) {
+        if (state.lossReason) {
+          lossReasonVal = state.lossReason
+        } else if (config.mode === 'low_budget') {
+          lossReasonVal = '资金不足，预算耗尽'
+        } else if (config.mode === 'peak_guarantee') {
+          lossReasonVal = '高峰时段满意度低于目标'
+        } else if (config.mode === 'time_limit') {
+          lossReasonVal = '限时挑战未达利润目标'
+        }
+      }
+      
+      const entry: ChallengeHistoryEntry = {
+        id: generateId('ch', challengeHistoryIdCounter++),
+        mode: state.challengeMode,
+        title: config.title,
+        startTime: state.challengeStart,
+        endTime: Date.now(),
+        totalDays: state.day - 1 + (state.time / (24 * 60)),
+        result: won ? 'won' : 'lost',
+        lossReason: lossReasonVal,
+        startMoney: config.startMoney,
+        endMoney: state.money + reward,
+        profit,
+        targetProfit: config.targetProfit,
+        finalSatisfaction: state.stats.satisfaction,
+        targetSatisfaction: config.targetSatisfaction,
+        completedTasks: state.stats.completedTasks,
+        failedTasks: state.stats.failedTasks,
+        totalRides: state.stats.totalRides,
+        totalRevenue: state.stats.revenue,
+        totalExpenses: state.stats.expenses,
+        reward: won ? reward : 0,
+        rank: computeRank(state.challengeMode, profit, state.stats.satisfaction),
+      }
+      updatedChallengeHistory.push(entry)
+    }
+    
     return {
       gameOver: true,
       gameWon: won,
       money: state.money + reward,
+      challengeHistory: updatedChallengeHistory,
     }
   }),
 
@@ -1005,6 +1673,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     gameStarted: false,
     challengeMode: 'none',
     challengeConfig: null,
+    challengeStart: 0,
     activePanel: 'map',
     selectedStationId: null,
     rules: { ...defaultRules },
@@ -1013,10 +1682,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
       dailyHistory: [],
       todayRevenue: { rideFares: 0, memberships: 0, fines: 0, other: 0 },
       todayExpenses: { repairs: 0, batteries: 0, salaries: 0, penalties: 0, other: 0 },
+      todayTaskRevenue: { replenish: 0, recycle: 0, battery: 0, complaint: 0 },
+      todayTaskPenalty: { replenish: 0, recycle: 0, battery: 0, complaint: 0 },
+      todayStationStats: new Map(),
     },
     stations: generateStations(),
     bikes: generateBikes(),
-    tasks: initialTasks,
+    tasks: initialTasks.map(t => ({
+      ...t,
+      sourceStationId: t.type === 'replenish' ? findBestSourceStation(generateStations(), t.stationId, t.bikeCount || 5) : undefined,
+    })),
     employees: generateEmployees(),
     events: [],
     repairJobs: initialRepairJobs,
@@ -1024,5 +1699,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     showChallengeSelect: true,
     gameOver: false,
     gameWon: false,
+    lossReason: undefined,
+    challengeHistory: [],
+    dispatchLogs: [],
   }),
 }))

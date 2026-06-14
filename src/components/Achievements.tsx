@@ -1,17 +1,18 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useGameStore } from '../store/gameStore'
 import { challengeConfigs } from '../data/initialData'
 import { formatMoney } from '../utils/format'
-import { ChallengeMode } from '../types'
+import { ChallengeMode, ChallengeHistoryEntry } from '../types'
 
 const Achievements = () => {
   const { 
     achievements, stats, challengeMode, challengeConfig,
     startChallenge, showChallengeSelect, setShowChallengeSelect, 
-    money, day, time, gameOver, gameWon
+    money, day, time, gameOver, gameWon, lossReason, challengeHistory
   } = useGameStore()
 
   const [selectedMode, setSelectedMode] = useState<ChallengeMode | null>(null)
+  const [historyTab, setHistoryTab] = useState<ChallengeMode>('time_limit')
 
   const timeLimitAchievements = achievements.filter(a => a.type === 'time_limit')
   const lowBudgetAchievements = achievements.filter(a => a.type === 'low_budget')
@@ -56,6 +57,32 @@ const Achievements = () => {
     }
   }
 
+  const formatDateTime = (timestamp: number) => {
+    const date = new Date(timestamp)
+    return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  }
+
+  const getStars = (rank?: number) => {
+    const stars = rank ? 6 - rank : 1
+    return '⭐'.repeat(Math.max(0, Math.min(5, stars)))
+  }
+
+  const sortHistory = (entries: ChallengeHistoryEntry[], mode: ChallengeMode) => {
+    return [...entries].sort((a, b) => {
+      if (a.result === 'won' && b.result !== 'won') return -1
+      if (a.result !== 'won' && b.result === 'won') return 1
+      if (mode === 'peak_guarantee') {
+        return (b.finalSatisfaction || 0) - (a.finalSatisfaction || 0)
+      }
+      return b.profit - a.profit
+    })
+  }
+
+  const filteredHistory = useMemo(() => {
+    const filtered = challengeHistory.filter(h => h.mode === historyTab)
+    return sortHistory(filtered, historyTab)
+  }, [challengeHistory, historyTab])
+
   const handleStartChallenge = (mode: ChallengeMode) => {
     if (window.confirm(`确定要开始${getModeLabel(mode)}吗？当前进度将丢失。`)) {
       startChallenge(mode)
@@ -65,6 +92,8 @@ const Achievements = () => {
   const handleOpenChallengeSelect = () => {
     setShowChallengeSelect(true)
   }
+
+  const currentProfit = challengeConfig ? money - challengeConfig.startMoney : 0
 
   return (
     <div className="card">
@@ -93,7 +122,7 @@ const Achievements = () => {
           <div className="card" style={{ backgroundColor: 'var(--bg-card)', marginBottom: '20px' }}>
             <div className="card-header" style={{ borderBottom: '1px solid var(--border)' }}>
               <h3 style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                {getModeIcon(challengeMode)} 当前挑战
+                {getModeIcon(challengeMode)} 当前挑战状态
               </h3>
               <span 
                 style={{
@@ -114,6 +143,74 @@ const Achievements = () => {
                 <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0 }}>
                   {challengeConfig.description}
                 </p>
+              </div>
+
+              <div style={{ 
+                marginBottom: '16px', 
+                backgroundColor: 'var(--bg-dark)', 
+                borderRadius: '8px',
+                overflow: 'hidden'
+              }}>
+                <div style={{ 
+                  fontSize: '11px', 
+                  padding: '6px 12px', 
+                  backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                  color: 'var(--info)',
+                  fontWeight: '600',
+                  borderBottom: '1px solid var(--border)'
+                }}>
+                  📋 挑战起始条件
+                </div>
+                <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
+                  <tbody>
+                    <tr>
+                      <td style={{ padding: '8px 12px', color: 'var(--text-secondary)', width: '50%', borderBottom: '1px solid var(--border)' }}>
+                        起始资金
+                      </td>
+                      <td style={{ padding: '8px 12px', fontWeight: '600', color: 'var(--secondary)', borderBottom: '1px solid var(--border)' }}>
+                        {formatMoney(challengeConfig.startMoney)}
+                      </td>
+                    </tr>
+                    {challengeConfig.timeLimit && (
+                      <tr>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
+                          时限
+                        </td>
+                        <td style={{ padding: '8px 12px', fontWeight: '600', borderBottom: '1px solid var(--border)' }}>
+                          {Math.floor(challengeConfig.timeLimit / 60)}分钟
+                        </td>
+                      </tr>
+                    )}
+                    {challengeConfig.targetProfit && (
+                      <tr>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
+                          目标利润
+                        </td>
+                        <td style={{ padding: '8px 12px', fontWeight: '600', color: 'var(--warning)', borderBottom: '1px solid var(--border)' }}>
+                          {formatMoney(challengeConfig.targetProfit)}
+                        </td>
+                      </tr>
+                    )}
+                    {challengeConfig.targetSatisfaction && (
+                      <tr>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
+                          最低满意度
+                        </td>
+                        <td style={{ padding: '8px 12px', fontWeight: '600', color: 'var(--info)', borderBottom: '1px solid var(--border)' }}>
+                          {challengeConfig.targetSatisfaction}%
+                        </td>
+                      </tr>
+                    )}
+                    <tr>
+                      <td style={{ padding: '8px 12px', color: 'var(--text-secondary)' }}>
+                        通关奖励
+                      </td>
+                      <td style={{ padding: '8px 12px', fontWeight: '600', color: 'var(--warning)' }}>
+                        🎁 +{formatMoney(challengeConfig.reward)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
               
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px', marginBottom: '16px' }}>
@@ -146,10 +243,10 @@ const Achievements = () => {
                   <div style={{ 
                     fontSize: '16px', 
                     fontWeight: 'bold', 
-                    color: money - challengeConfig.startMoney >= 0 ? 'var(--secondary)' : 'var(--danger)'
+                    color: currentProfit >= 0 ? 'var(--secondary)' : 'var(--danger)'
                   }}>
-                    {money - challengeConfig.startMoney >= 0 ? '+' : ''}
-                    {formatMoney(money - challengeConfig.startMoney)}
+                    {currentProfit >= 0 ? '+' : ''}
+                    {formatMoney(currentProfit)}
                   </div>
                 </div>
                 <div style={{ 
@@ -187,16 +284,16 @@ const Achievements = () => {
               {challengeConfig.targetProfit && (
                 <div style={{ marginBottom: '12px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>目标利润</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>📈 利润目标进度</span>
                     <span>
-                      {formatMoney(Math.max(0, money - challengeConfig.startMoney))} / {formatMoney(challengeConfig.targetProfit)}
+                      {formatMoney(Math.max(0, currentProfit))} / {formatMoney(challengeConfig.targetProfit)}
                     </span>
                   </div>
                   <div className="progress-bar">
                     <div 
                       className="progress-fill success"
                       style={{ 
-                        width: `${Math.min(100, ((money - challengeConfig.startMoney) / challengeConfig.targetProfit) * 100)}%` 
+                        width: `${Math.min(100, Math.max(0, (currentProfit / challengeConfig.targetProfit) * 100))}%` 
                       }}
                     ></div>
                   </div>
@@ -206,7 +303,7 @@ const Achievements = () => {
               {challengeConfig.targetSatisfaction && (
                 <div style={{ marginBottom: '12px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>满意度目标</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>😊 满意度目标进度</span>
                     <span>{stats.satisfaction.toFixed(1)}% / {challengeConfig.targetSatisfaction}%</span>
                   </div>
                   <div className="progress-bar">
@@ -215,6 +312,20 @@ const Achievements = () => {
                       style={{ width: `${Math.min(100, (stats.satisfaction / challengeConfig.targetSatisfaction) * 100)}%` }}
                     ></div>
                   </div>
+                </div>
+              )}
+
+              {gameOver && lossReason && (
+                <div style={{ 
+                  marginBottom: '12px',
+                  padding: '10px 12px', 
+                  backgroundColor: 'rgba(239, 68, 68, 0.1)', 
+                  borderRadius: '6px',
+                  border: '1px solid var(--danger)',
+                  fontSize: '12px',
+                  color: 'var(--danger)'
+                }}>
+                  <span style={{ fontWeight: '600' }}>❌ 失败原因：</span>{lossReason}
                 </div>
               )}
 
@@ -368,7 +479,121 @@ const Achievements = () => {
 
         <div style={{ marginBottom: '24px' }}>
           <h3 style={{ fontSize: '15px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            🏅 成就列表
+            🏅 挑战历史榜单
+          </h3>
+          
+          <div style={{ 
+            display: 'flex', 
+            gap: '4px', 
+            marginBottom: '12px',
+            padding: '4px',
+            backgroundColor: 'var(--bg-dark)',
+            borderRadius: '8px'
+          }}>
+            {(['time_limit', 'low_budget', 'peak_guarantee'] as ChallengeMode[]).map(mode => (
+              <button
+                key={mode}
+                onClick={() => setHistoryTab(mode)}
+                style={{
+                  flex: 1,
+                  padding: '8px 12px',
+                  fontSize: '12px',
+                  fontWeight: historyTab === mode ? '600' : '400',
+                  backgroundColor: historyTab === mode ? 'var(--primary)' : 'transparent',
+                  color: historyTab === mode ? 'white' : 'var(--text-secondary)',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '4px'
+                }}
+              >
+                {getModeIcon(mode)} {getModeLabel(mode)}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ 
+            backgroundColor: 'var(--bg-card)', 
+            borderRadius: '8px',
+            overflow: 'hidden',
+            border: '1px solid var(--border)'
+          }}>
+            {filteredHistory.length === 0 ? (
+              <div style={{ 
+                padding: '40px 20px', 
+                textAlign: 'center',
+                color: 'var(--text-secondary)',
+                fontSize: '13px'
+              }}>
+                <div style={{ fontSize: '48px', marginBottom: '12px' }}>📭</div>
+                <div>暂无记录，开始挑战吧！</div>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse', minWidth: '600px' }}>
+                  <thead>
+                    <tr style={{ backgroundColor: 'var(--bg-dark)' }}>
+                      <th style={{ padding: '10px 12px', textAlign: 'left', fontWeight: '600', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>排名</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'left', fontWeight: '600', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>日期/时间</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>结果</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>运营天数</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>利润</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>满意度</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>星级</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredHistory.map((entry, index) => (
+                      <tr key={entry.id} style={{ 
+                        borderBottom: index < filteredHistory.length - 1 ? '1px solid var(--border)' : 'none',
+                        backgroundColor: index === 0 ? 'rgba(245, 158, 11, 0.05)' : 'transparent'
+                      }}>
+                        <td style={{ padding: '10px 12px', fontWeight: index < 3 ? '600' : '400' }}>
+                          {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`}
+                        </td>
+                        <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }}>
+                          {formatDateTime(entry.endTime)}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                          {entry.result === 'won' ? (
+                            <span style={{ color: 'var(--secondary)', fontWeight: '600' }}>✅ 通关</span>
+                          ) : (
+                            <span style={{ color: 'var(--danger)', fontWeight: '600' }}>❌ 失败</span>
+                          )}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                          {entry.totalDays.toFixed(1)}天
+                        </td>
+                        <td style={{ 
+                          padding: '10px 12px', 
+                          textAlign: 'right',
+                          fontWeight: '600',
+                          color: entry.profit >= 0 ? 'var(--secondary)' : 'var(--danger)'
+                        }}>
+                          {entry.profit >= 0 ? '+' : ''}{formatMoney(entry.profit)}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                          {entry.finalSatisfaction !== undefined ? `${entry.finalSatisfaction.toFixed(1)}%` : '-'}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: '11px' }}>
+                          {getStars(entry.rank)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: '24px' }}>
+          <h3 style={{ fontSize: '15px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            🏆 成就列表
             <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>
               已解锁 {unlockedCount}/{achievements.length}，累计奖励 {formatMoney(totalReward)}
             </span>

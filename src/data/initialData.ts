@@ -1,22 +1,29 @@
 import { Station, Bike, Employee, Achievement, GameRules, GameStats, GameEvent, Task, RepairJob, ChallengeConfig } from '../types'
 
 export const generateStations = (): Station[] => {
-  return [
-    { id: 'st-001', name: '中央广场站', position: { x: 400, y: 300 }, capacity: 30, type: 'hub', availableBikes: 18, brokenBikes: 2, lowBatteryBikes: 5, demandLevel: 50, congestionLevel: 30 },
-    { id: 'st-002', name: '科技园A站', position: { x: 650, y: 180 }, capacity: 25, type: 'hot', availableBikes: 22, brokenBikes: 0, lowBatteryBikes: 3, demandLevel: 80, congestionLevel: 60 },
-    { id: 'st-003', name: '科技园B站', position: { x: 750, y: 280 }, capacity: 20, type: 'hot', availableBikes: 15, brokenBikes: 1, lowBatteryBikes: 2, demandLevel: 70, congestionLevel: 50 },
-    { id: 'st-004', name: '商业街站', position: { x: 250, y: 450 }, capacity: 25, type: 'hot', availableBikes: 8, brokenBikes: 1, lowBatteryBikes: 4, demandLevel: 90, congestionLevel: 75 },
-    { id: 'st-005', name: '地铁站C口', position: { x: 500, y: 500 }, capacity: 35, type: 'hub', availableBikes: 5, brokenBikes: 3, lowBatteryBikes: 2, demandLevel: 95, congestionLevel: 85 },
-    { id: 'st-006', name: '住宅区东站', position: { x: 150, y: 200 }, capacity: 20, type: 'normal', availableBikes: 16, brokenBikes: 0, lowBatteryBikes: 1, demandLevel: 30, congestionLevel: 20 },
-    { id: 'st-007', name: '住宅区西站', position: { x: 100, y: 350 }, capacity: 20, type: 'normal', availableBikes: 14, brokenBikes: 1, lowBatteryBikes: 2, demandLevel: 35, congestionLevel: 25 },
-    { id: 'st-008', name: '大学东门', position: { x: 600, y: 450 }, capacity: 30, type: 'hot', availableBikes: 25, brokenBikes: 2, lowBatteryBikes: 6, demandLevel: 85, congestionLevel: 70 },
-    { id: 'st-009', name: '医院北门', position: { x: 350, y: 150 }, capacity: 15, type: 'normal', availableBikes: 12, brokenBikes: 0, lowBatteryBikes: 1, demandLevel: 45, congestionLevel: 35 },
-    { id: 'st-010', name: '体育中心站', position: { x: 700, y: 550 }, capacity: 25, type: 'normal', availableBikes: 20, brokenBikes: 1, lowBatteryBikes: 3, demandLevel: 55, congestionLevel: 40 },
-    { id: 'st-011', name: '维修中心', position: { x: 50, y: 550 }, capacity: 50, type: 'maintenance', availableBikes: 10, brokenBikes: 5, lowBatteryBikes: 8, demandLevel: 10, congestionLevel: 5 },
-    { id: 'st-012', name: '公园南门', position: { x: 850, y: 350 }, capacity: 15, type: 'normal', availableBikes: 10, brokenBikes: 0, lowBatteryBikes: 2, demandLevel: 25, congestionLevel: 15 },
-    { id: 'st-np-01', name: '禁停区A', position: { x: 300, y: 550 }, capacity: 0, type: 'no_parking', availableBikes: 0, brokenBikes: 0, lowBatteryBikes: 0, demandLevel: 0, congestionLevel: 0 },
-    { id: 'st-np-02', name: '禁停区B', position: { x: 800, y: 100 }, capacity: 0, type: 'no_parking', availableBikes: 0, brokenBikes: 0, lowBatteryBikes: 0, demandLevel: 0, congestionLevel: 0 },
+  const raw = [
+    { id: 'st-001', name: '中央广场站', position: { x: 400, y: 300 }, capacity: 30, type: 'hub' as const, availableBikes: 18, brokenBikes: 2, lowBatteryBikes: 5, demandLevel: 50, congestionLevel: 30 },
+    { id: 'st-002', name: '科技园A站', position: { x: 650, y: 180 }, capacity: 25, type: 'hot' as const, availableBikes: 22, brokenBikes: 0, lowBatteryBikes: 3, demandLevel: 80, congestionLevel: 60 },
+    { id: 'st-003', name: '科技园B站', position: { x: 750, y: 280 }, capacity: 20, type: 'hot' as const, availableBikes: 15, brokenBikes: 1, lowBatteryBikes: 2, demandLevel: 70, congestionLevel: 50 },
+    { id: 'st-004', name: '商业街站', position: { x: 250, y: 450 }, capacity: 25, type: 'hot' as const, availableBikes: 8, brokenBikes: 1, lowBatteryBikes: 4, demandLevel: 90, congestionLevel: 75 },
+    { id: 'st-005', name: '地铁站C口', position: { x: 500, y: 500 }, capacity: 35, type: 'hub' as const, availableBikes: 5, brokenBikes: 3, lowBatteryBikes: 2, demandLevel: 95, congestionLevel: 85 },
+    { id: 'st-006', name: '住宅区东站', position: { x: 150, y: 200 }, capacity: 20, type: 'normal' as const, availableBikes: 16, brokenBikes: 0, lowBatteryBikes: 1, demandLevel: 30, congestionLevel: 20 },
+    { id: 'st-007', name: '住宅区西站', position: { x: 100, y: 350 }, capacity: 20, type: 'normal' as const, availableBikes: 14, brokenBikes: 1, lowBatteryBikes: 2, demandLevel: 35, congestionLevel: 25 },
+    { id: 'st-008', name: '大学东门', position: { x: 600, y: 450 }, capacity: 30, type: 'hot' as const, availableBikes: 25, brokenBikes: 2, lowBatteryBikes: 6, demandLevel: 85, congestionLevel: 70 },
+    { id: 'st-009', name: '医院北门', position: { x: 350, y: 150 }, capacity: 15, type: 'normal' as const, availableBikes: 12, brokenBikes: 0, lowBatteryBikes: 1, demandLevel: 45, congestionLevel: 35 },
+    { id: 'st-010', name: '体育中心站', position: { x: 700, y: 550 }, capacity: 25, type: 'normal' as const, availableBikes: 20, brokenBikes: 1, lowBatteryBikes: 3, demandLevel: 55, congestionLevel: 40 },
+    { id: 'st-011', name: '维修中心', position: { x: 50, y: 550 }, capacity: 50, type: 'maintenance' as const, availableBikes: 10, brokenBikes: 5, lowBatteryBikes: 8, demandLevel: 10, congestionLevel: 5 },
+    { id: 'st-012', name: '公园南门', position: { x: 850, y: 350 }, capacity: 15, type: 'normal' as const, availableBikes: 10, brokenBikes: 0, lowBatteryBikes: 2, demandLevel: 25, congestionLevel: 15 },
+    { id: 'st-np-01', name: '禁停区A', position: { x: 300, y: 550 }, capacity: 0, type: 'no_parking' as const, availableBikes: 0, brokenBikes: 0, lowBatteryBikes: 0, demandLevel: 0, congestionLevel: 0 },
+    { id: 'st-np-02', name: '禁停区B', position: { x: 800, y: 100 }, capacity: 0, type: 'no_parking' as const, availableBikes: 0, brokenBikes: 0, lowBatteryBikes: 0, demandLevel: 0, congestionLevel: 0 },
   ]
+  return raw.map(s => ({
+    ...s,
+    baseDemandLevel: s.demandLevel,
+    baseCongestionLevel: s.congestionLevel,
+    dispatchPriorityBoost: 0,
+    boostedUntil: 0,
+  }))
 }
 
 export const generateBikes = (): Bike[] => {
@@ -101,6 +108,19 @@ export const defaultStats: GameStats = {
     penalties: 0,
     other: 0,
   },
+  todayTaskRevenue: {
+    replenish: 0,
+    recycle: 0,
+    battery: 0,
+    complaint: 0,
+  },
+  todayTaskPenalty: {
+    replenish: 0,
+    recycle: 0,
+    battery: 0,
+    complaint: 0,
+  },
+  todayStationStats: new Map(),
 }
 
 export const generateAchievements = (): Achievement[] => {

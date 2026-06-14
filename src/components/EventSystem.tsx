@@ -110,7 +110,6 @@ const EventSystem = () => {
       severity,
       startTime: time,
       duration: (30 + Math.floor(Math.random() * 60)) * severityMultiplier,
-      affectedStations,
       effects: data.effects,
     })
   }
